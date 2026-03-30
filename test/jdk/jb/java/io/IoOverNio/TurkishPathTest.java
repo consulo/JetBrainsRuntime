@@ -23,8 +23,7 @@
 
 /* @test
  * @summary `TurkishPathTest` triggers WindowsPath.compareTo()
- * @run -Duser.language=tr -Duser.country=TR
- *      TurkishPathTest
+ * @run main/othervm -Duser.language=tr -Duser.country=TR TurkishPathTest
  */
 
 import java.nio.file.Path;
