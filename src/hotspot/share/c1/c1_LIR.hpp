@@ -2309,7 +2309,7 @@ class LIR_List: public CompilationResourceObj {
   void unsigned_shift_right(LIR_Opr value, int count, LIR_Opr dst) { unsigned_shift_right(value, LIR_OprFact::intConst(count), dst, LIR_OprFact::illegalOpr); }
 
   void lcmp2int(LIR_Opr left, LIR_Opr right, LIR_Opr dst)        { append(new LIR_Op2(lir_cmp_l2i,  left, right, dst)); }
-  void fcmp2int(LIR_Opr left, LIR_Opr right, LIR_Opr dst, bool is_unordered_less);
+  void fcmp2int(LIR_Opr left, LIR_Opr right, LIR_Opr dst, bool is_unordered_less, LIR_Opr tmp = LIR_OprFact::illegalOpr);
 
   void call_runtime_leaf(address routine, LIR_Opr tmp, LIR_Opr result, LIR_OprList* arguments) {
     append(new LIR_OpRTCall(routine, tmp, result, arguments));
