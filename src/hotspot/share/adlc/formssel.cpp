@@ -4279,6 +4279,7 @@ bool MatchRule::is_ideal_membar() const {
     !strcmp(_opType,"MemBarVolatile") ||
     !strcmp(_opType,"MemBarCPUOrder") ||
     !strcmp(_opType,"MemBarStoreStore") ||
+    !strcmp(_opType,"SameAddrLoadFence" ) ||
     !strcmp(_opType,"OnSpinWait");
 }
 

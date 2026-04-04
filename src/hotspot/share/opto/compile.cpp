@@ -3817,6 +3817,7 @@ void Compile::final_graph_reshaping_main_switch(Node* n, Final_Reshape_Counts& f
       n->set_req(MemBarNode::Precedent, top());
     }
     break;
+  case Op_SameAddrLoadFence:
   case Op_MemBarAcquire: {
     if (n->as_MemBar()->trailing_load() && n->req() > MemBarNode::Precedent) {
       // At parse time, the trailing MemBarAcquire for a volatile load
