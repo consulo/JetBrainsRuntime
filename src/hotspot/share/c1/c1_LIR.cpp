@@ -501,6 +501,7 @@ void LIR_OpVisitState::visit(LIR_Op* op) {
       assert(opConvert->_info == nullptr, "must be");
       if (opConvert->_opr->is_valid())       do_input(opConvert->_opr);
       if (opConvert->_result->is_valid())    do_output(opConvert->_result);
+      if (opConvert->_tmp->is_valid())       do_temp(opConvert->_tmp);
       do_stub(opConvert->_stub);
 
       break;
@@ -1919,6 +1920,9 @@ void LIR_OpConvert::print_instr(outputStream* out) const {
   print_bytecode(out, bytecode());
   in_opr()->print(out);                  out->print(" ");
   result_opr()->print(out);              out->print(" ");
+  if(tmp()->is_valid()) {
+    tmp()->print(out);                   out->print(" ");
+  }
 }
 
 void LIR_OpConvert::print_bytecode(outputStream* out, Bytecodes::Code code) {

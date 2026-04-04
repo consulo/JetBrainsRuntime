@@ -1446,15 +1446,18 @@ class LIR_OpConvert: public LIR_Op1 {
  private:
    Bytecodes::Code _bytecode;
    ConversionStub* _stub;
+   LIR_Opr _tmp;
 
  public:
-   LIR_OpConvert(Bytecodes::Code code, LIR_Opr opr, LIR_Opr result, ConversionStub* stub)
+   LIR_OpConvert(Bytecodes::Code code, LIR_Opr opr, LIR_Opr result, ConversionStub* stub, LIR_Opr tmp)
      : LIR_Op1(lir_convert, opr, result)
      , _bytecode(code)
-     , _stub(stub)                               {}
+     , _stub(stub)
+     , _tmp(tmp)                                 {}
 
   Bytecodes::Code bytecode() const               { return _bytecode; }
   ConversionStub* stub() const                   { return _stub; }
+  LIR_Opr tmp() const                            { return _tmp; }
 
   virtual void emit_code(LIR_Assembler* masm);
   virtual LIR_OpConvert* as_OpConvert() { return this; }
@@ -2198,7 +2201,9 @@ class LIR_List: public CompilationResourceObj {
   void safepoint(LIR_Opr tmp, CodeEmitInfo* info)  { append(new LIR_Op1(lir_safepoint, tmp, info)); }
   void return_op(LIR_Opr result)                   { append(new LIR_OpReturn(result)); }
 
-  void convert(Bytecodes::Code code, LIR_Opr left, LIR_Opr dst, ConversionStub* stub = nullptr/*, bool is_32bit = false*/) { append(new LIR_OpConvert(code, left, dst, stub)); }
+  void convert(Bytecodes::Code code, LIR_Opr left, LIR_Opr dst, ConversionStub* stub = nullptr, LIR_Opr tmp = LIR_OprFact::illegalOpr) {
+    append(new LIR_OpConvert(code, left, dst, stub, tmp));
+  }
 
   void logical_and (LIR_Opr left, LIR_Opr right, LIR_Opr dst) { append(new LIR_Op2(lir_logic_and,  left, right, dst)); }
   void logical_or  (LIR_Opr left, LIR_Opr right, LIR_Opr dst) { append(new LIR_Op2(lir_logic_or,   left, right, dst)); }
