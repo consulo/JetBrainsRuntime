@@ -469,13 +469,13 @@ void VM_Version::get_processor_features() {
   }
 
   if (UseActiveCoresMP) {
-    if (os::Linux::sched_active_processor_count() != 1) {
+    if (os::Linux::active_processor_count() != 1) {
       if (!FLAG_IS_DEFAULT(UseActiveCoresMP))
         warning("UseActiveCoresMP disabled because active processors are more than one.");
       FLAG_SET_DEFAULT(UseActiveCoresMP, false);
     }
   } else { // !UseActiveCoresMP
-    if (FLAG_IS_DEFAULT(UseActiveCoresMP) && os::Linux::sched_active_processor_count() == 1) {
+    if (FLAG_IS_DEFAULT(UseActiveCoresMP) && os::Linux::active_processor_count() == 1) {
       FLAG_SET_DEFAULT(UseActiveCoresMP, true);
     }
   }
