@@ -2068,7 +2068,7 @@ class LIR_List: public CompilationResourceObj {
   const char *  _file;
   int           _line;
 #endif
-#ifdef RISCV
+#if defined(RISCV) || defined(LOONGARCH)
   LIR_Opr       _cmp_opr1;
   LIR_Opr       _cmp_opr2;
 #endif
@@ -2084,7 +2084,7 @@ class LIR_List: public CompilationResourceObj {
     }
 #endif // PRODUCT
 
-#ifdef RISCV
+#if defined(RISCV) || defined(LOONGARCH)
     set_cmp_oprs(op);
     // lir_cmp set cmp oprs only on riscv
     if (op->code() == lir_cmp) return;
@@ -2106,7 +2106,7 @@ class LIR_List: public CompilationResourceObj {
   void set_file_and_line(const char * file, int line);
 #endif
 
-#ifdef RISCV
+#if defined(RISCV) || defined(LOONGARCH)
   void set_cmp_oprs(LIR_Op* op);
 #endif
 

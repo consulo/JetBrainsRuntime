@@ -314,6 +314,8 @@ public:
 
     bool is_volatile = (decorators & MO_SEQ_CST) != 0;
     bool is_acquire = (decorators & MO_ACQUIRE) != 0;
+    bool is_relaxed = (decorators & MO_RELAXED) != 0;
+    bool is_unsafe = (decorators & C2_UNSAFE_ACCESS) != 0;
 
     // If reference is volatile, prevent following volatiles ops from
     // floating up before the volatile access.
@@ -347,6 +349,13 @@ public:
         assert(_leading_membar == nullptr || support_IRIW_for_not_multiple_copy_atomic_cpu, "no leading membar expected");
         Node* mb = kit->insert_mem_bar(Op_MemBarAcquire, n);
         mb->as_MemBar()->set_trailing_load();
+      } else if (is_relaxed && is_unsafe) {
+#ifdef LOONGARCH64
+        assert(kit != nullptr, "unsupported at optimization time");
+        Node* n = _access.raw_access();
+        Node* mb = kit->insert_mem_bar(Op_SameAddrLoadFence, n);
+        mb->as_MemBar()->set_trailing_load();
+#endif
       }
     }
   }

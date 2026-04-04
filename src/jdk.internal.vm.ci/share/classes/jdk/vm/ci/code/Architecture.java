@@ -134,7 +134,8 @@ public abstract class Architecture {
     /// |-----------|-----------------------------|
     /// | "aarch64" | [jdk.vm.ci.aarch64.AArch64] |
     /// | "AMD64"   | [jdk.vm.ci.amd64.AMD64]     |
-    /// | "riscv64" | [jdk.vm.ci.riscv64.RISCV64] |
+    /// | "riscv64"     | [jdk.vm.ci.riscv64.RISCV64]         |
+    /// | "loongarch64" | [jdk.vm.ci.loongarch64.LoongArch64] |
     public String getName() {
         return name;
     }

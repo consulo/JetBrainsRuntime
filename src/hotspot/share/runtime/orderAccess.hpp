@@ -262,6 +262,10 @@ class OrderAccess : public AllStatic {
     loadload();
 #endif
   }
+
+#if defined(LOONGARCH64) && !defined(ZERO)
+  static void     loadload_for_sa();
+#endif
 private:
   // This is a helper that invokes the StubRoutines::fence_entry()
   // routine if it exists, It should only be used by platforms that

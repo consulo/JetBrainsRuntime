@@ -44,6 +44,8 @@
   #define SYS_membarrier 389
   #elif defined(ALPHA)
   #define SYS_membarrier 517
+  #elif defined(LOONGARCH)
+  #define SYS_membarrier 283
   #else
   #error define SYS_membarrier for the arch
   #endif

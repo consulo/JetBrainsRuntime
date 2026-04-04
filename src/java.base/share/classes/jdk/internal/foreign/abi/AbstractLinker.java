@@ -30,6 +30,7 @@ import jdk.internal.foreign.abi.aarch64.linux.LinuxAArch64Linker;
 import jdk.internal.foreign.abi.aarch64.macos.MacOsAArch64Linker;
 import jdk.internal.foreign.abi.aarch64.windows.WindowsAArch64Linker;
 import jdk.internal.foreign.abi.fallback.FallbackLinker;
+import jdk.internal.foreign.abi.loongarch64.linux.LinuxLoongArch64Linker;
 import jdk.internal.foreign.abi.ppc64.aix.AixPPC64Linker;
 import jdk.internal.foreign.abi.ppc64.linux.LinuxPPC64Linker;
 import jdk.internal.foreign.abi.ppc64.linux.LinuxPPC64leLinker;

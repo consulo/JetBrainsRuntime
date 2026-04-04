@@ -2608,7 +2608,7 @@ void os::print_memory_info(outputStream* st) {
 // before "flags" so if we find a second "model name", then the
 // "flags" field is considered missing.
 static bool print_model_name_and_flags(outputStream* st, char* buf, size_t buflen) {
-#if defined(IA32) || defined(AMD64)
+#if defined(IA32) || defined(AMD64) || defined(LOONGARCH64)
   // Other platforms have less repetitive cpuinfo files
   FILE *fp = os::fopen("/proc/cpuinfo", "r");
   if (fp) {
@@ -2720,7 +2720,7 @@ void os::jfr_report_memory_info() {
 
 #endif // INCLUDE_JFR
 
-#if defined(AMD64) || defined(IA32) || defined(X32)
+#if defined(AMD64) || defined(IA32) || defined(X32) || defined(LOONGARCH64)
 const char* search_string = "model name";
 #elif defined(M68K)
 const char* search_string = "CPU";
@@ -4514,6 +4514,13 @@ void os::Linux::numa_init() {
       disable_numa("The process is bound to a single NUMA node", true);
     } else if (Linux::mem_and_cpu_node_mismatch()) {
       disable_numa("The process memory and cpu node configuration does not match", true);
+#if defined(LOONGARCH64) && !defined(ZERO)
+    } else if (InitialHeapSize < NUMAMinHeapSizePerNode * os::numa_get_groups_num()) {
+      disable_numa("Insufficient initial heap size", false);
+    } else if (FLAG_IS_CMDLINE(NewSize) &&
+               (NewSize < ScaleForWordSize(1*M) * os::numa_get_groups_num())) {
+      disable_numa("Insufficient maximum size of young generation", false);
+#endif
     } else {
       LogTarget(Info,os) log;
       LogStream ls(log);

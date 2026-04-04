@@ -755,7 +755,7 @@ bool ArchDesc::check_usage() {
   callback.do_form_by_name("vecA");
   callback.do_form_by_name("vecD");
   callback.do_form_by_name("vecX");
-#elif defined(AMD64)
+#elif defined(AMD64) || defined(LOONGARCH64)
   callback.do_form_by_name("vecS");
   callback.do_form_by_name("vecD");
   callback.do_form_by_name("vecX");

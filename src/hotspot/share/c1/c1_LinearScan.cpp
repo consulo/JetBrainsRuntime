@@ -5873,9 +5873,13 @@ void EdgeMoveOptimizer::optimize(BlockList* code) {
     if (block->number_of_preds() > 1 && !block->is_set(BlockBegin::exception_entry_flag)) {
       optimizer.optimize_moves_at_block_end(block);
     }
+#if !defined(RISCV) && !defined(LOONGARCH)
+    // Disable this optimization on riscv and loongarch temporarily, because it does not
+    // work when the comparison operands are bound to branches or cmoves.
     if (block->number_of_sux() == 2) {
       optimizer.optimize_moves_at_block_begin(block);
     }
+#endif
   }
 }
 
@@ -6278,7 +6282,16 @@ void ControlFlowOptimizer::delete_unnecessary_jumps(BlockList* code) {
             LIR_OpBranch* prev_branch = (LIR_OpBranch*)prev_op;
 
             if (prev_branch->stub() == nullptr) {
+#if defined(RISCV) || defined(LOONGARCH)
+              if (prev_branch->block() == code->at(i + 1) && prev_branch->info() == nullptr) {
+                TRACE_LINEAR_SCAN(3, tty->print_cr("Negating conditional branch and deleting unconditional branch at end of block B%d", block->block_id()));
 
+                // eliminate a conditional branch to the immediate successor
+                prev_branch->change_block(last_branch->block());
+                prev_branch->negate_cond();
+                instructions->trunc_to(instructions->length() - 1);
+              }
+#else
               LIR_Op2* prev_cmp = nullptr;
               // There might be a cmove inserted for profiling which depends on the same
               // compare. If we change the condition of the respective compare, we have
@@ -6318,6 +6331,7 @@ void ControlFlowOptimizer::delete_unnecessary_jumps(BlockList* code) {
                   prev_cmove->set_in_opr2(t);
                 }
               }
+#endif
             }
           }
         }

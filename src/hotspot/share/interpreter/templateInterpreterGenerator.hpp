@@ -112,9 +112,9 @@ class TemplateInterpreterGenerator: public AbstractInterpreterGenerator {
 
   void generate_fixed_frame(bool native_call);
 
-#ifdef AARCH64
+#if defined(AARCH64) || defined(LOONGARCH64)
   void generate_transcendental_entry(AbstractInterpreter::MethodKind kind, int fpargs);
-#endif // AARCH64
+#endif // AARCH64 || LOONGARCH64
 
 #ifdef ARM32
   void generate_math_runtime_call(AbstractInterpreter::MethodKind kind);

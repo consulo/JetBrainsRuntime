@@ -383,7 +383,7 @@ bool ObjectSynchronizer::quick_notify(oopDesc* obj, JavaThread* current, bool al
 }
 
 static bool useHeavyMonitors() {
-#if defined(X86) || defined(AARCH64) || defined(PPC64) || defined(RISCV64) || defined(S390)
+#if defined(X86) || defined(AARCH64) || defined(PPC64) || defined(RISCV64) || defined(S390) || defined(LOONGARCH64)
   return LockingMode == LM_MONITOR;
 #else
   return false;

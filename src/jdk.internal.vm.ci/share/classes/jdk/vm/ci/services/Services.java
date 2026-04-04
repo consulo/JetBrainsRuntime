@@ -272,6 +272,7 @@ public final class Services {
             case ARM: return "arm";
             case S390: return "s390";
             case PPC64: return "ppc64";
+            case LOONGARCH64: return "loongarch64";
             case OTHER: return "other";
             default: throw new InternalError("missing case for " + arch);
         }

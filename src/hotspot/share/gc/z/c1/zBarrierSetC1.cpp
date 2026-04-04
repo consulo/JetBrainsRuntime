@@ -450,6 +450,10 @@ LIR_Opr ZBarrierSetC1::atomic_cmpxchg_at_resolved(LIRAccess& access, LIRItem& cm
 #endif
   access.gen()->lir()->move(cmp_value.result(), cmp_value_opr);
 
+#if defined(LOONGARCH)
+  LIR_Opr result = access.gen()->new_register(T_OBJECT);
+#endif
+
   __ cas_obj(access.resolved_addr()->as_address_ptr()->base(),
              cmp_value_opr,
              new_value_zpointer,
@@ -457,12 +461,19 @@ LIR_Opr ZBarrierSetC1::atomic_cmpxchg_at_resolved(LIRAccess& access, LIRItem& cm
              access.gen()->new_register(T_OBJECT),
              access.gen()->new_register(T_OBJECT),
              access.gen()->new_register(T_OBJECT));
+#elif defined(LOONGARCH)
+             access.gen()->new_register(T_OBJECT),
+             access.gen()->new_register(T_OBJECT),
+             result);
 #else
              LIR_OprFact::illegalOpr, LIR_OprFact::illegalOpr);
 #endif
+
+#if !defined(LOONGARCH)
   LIR_Opr result = access.gen()->new_register(T_INT);
   __ cmove(lir_cond_equal, LIR_OprFact::intConst(1), LIR_OprFact::intConst(0),
            result, T_INT);
+#endif
 
   return result;
 }

@@ -42,7 +42,9 @@ class ZStoreBarrierBuffer : public CHeapObj<mtGC> {
   friend class ZVerify;
 
 private:
-  static const size_t BufferLength    = 32;
+  // Tune ZStoreBarrierBuffer length to decrease the opportunity goto
+  // copy_store_at slow-path.
+  static const size_t BufferLength    = 32 LOONGARCH64_ONLY(+32);
   static const size_t BufferSizeBytes = BufferLength * sizeof(ZStoreBarrierEntry);
 
   ZStoreBarrierEntry _buffer[BufferLength];

@@ -350,7 +350,7 @@ LIR_OpArrayCopy::LIR_OpArrayCopy(LIR_Opr src, LIR_Opr src_pos, LIR_Opr dst, LIR_
   , _tmp(tmp)
   , _expected_type(expected_type)
   , _flags(flags) {
-#if defined(X86) || defined(AARCH64) || defined(S390) || defined(RISCV64) || defined(PPC64)
+#if defined(X86) || defined(AARCH64) || defined(S390) || defined(RISCV64) || defined(PPC64) || defined(LOONGARCH64)
   if (expected_type != nullptr &&
       ((flags & ~LIR_OpArrayCopy::get_initial_copy_flags()) == 0)) {
     _stub = nullptr;
@@ -1096,7 +1096,7 @@ LIR_List::LIR_List(Compilation* compilation, BlockBegin* block)
   , _file(nullptr)
   , _line(0)
 #endif
-#ifdef RISCV
+#if defined(RISCV) || defined(LOONGARCH)
   , _cmp_opr1(LIR_OprFact::illegalOpr)
   , _cmp_opr2(LIR_OprFact::illegalOpr)
 #endif
@@ -1117,7 +1117,7 @@ void LIR_List::set_file_and_line(const char * file, int line) {
 }
 #endif
 
-#ifdef RISCV
+#if defined(RISCV) || defined(LOONGARCH)
 void LIR_List::set_cmp_oprs(LIR_Op* op) {
   switch (op->code()) {
     case lir_cmp:
@@ -1146,7 +1146,7 @@ void LIR_List::set_cmp_oprs(LIR_Op* op) {
       break;
 #if INCLUDE_ZGC
     case lir_xloadbarrier_test:
-      _cmp_opr1 = FrameMap::as_opr(t1);
+      _cmp_opr1 = FrameMap::as_opr(RISCV_ONLY(t1) LOONGARCH64_ONLY(SCR1));
       _cmp_opr2 = LIR_OprFact::intConst(0);
       break;
 #endif
