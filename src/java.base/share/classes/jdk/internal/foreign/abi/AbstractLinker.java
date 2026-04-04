@@ -66,7 +66,7 @@ public abstract sealed class AbstractLinker implements Linker permits LinuxAArch
                                                                       Windowsx64Linker, AixPPC64Linker,
                                                                       LinuxPPC64Linker, LinuxPPC64leLinker,
                                                                       LinuxRISCV64Linker, LinuxS390Linker,
-                                                                      FallbackLinker {
+                                                                      LinuxLoongArch64Linker, FallbackLinker {
 
     public interface UpcallStubFactory {
         MemorySegment makeStub(MethodHandle target, Arena arena);
