@@ -1715,6 +1715,7 @@ size_t os::page_size_for_region_unaligned(size_t region_size, size_t min_pages) 
 #define MAX_PATH    (2 * K)
 #endif
 
+#ifndef __HAIKU__
 void os::pause() {
   char filename[MAX_PATH];
   if (PauseAtStartupFile && PauseAtStartupFile[0]) {
@@ -1739,6 +1740,7 @@ void os::pause() {
                 "Could not open pause file '%s', continuing immediately.\n", filename);
   }
 }
+#endif // __HAIKU__
 
 static const char* errno_to_string (int e, bool short_text) {
   #define ALL_SHARED_ENUMS(X) \
@@ -1865,12 +1867,14 @@ const char* os::errno_name(int e) {
   return errno_to_string(e, true);
 }
 
+#ifndef __HAIKU__
 // create binary file, rewriting existing file if required
 int os::create_binary_file(const char* path, bool rewrite_existing) {
   int oflags = O_WRONLY | O_CREAT WINDOWS_ONLY(| O_BINARY);
   oflags |= rewrite_existing ? O_TRUNC : O_EXCL;
   return ::open(path, oflags, S_IREAD | S_IWRITE);
 }
+#endif // __HAIKU__
 
 void os::trace_page_sizes(const char* str,
                           const size_t region_min_size,

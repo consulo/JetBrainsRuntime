@@ -126,6 +126,9 @@ JNIEXPORT jint JNICALL AWTGetToolkitID() {
 #ifdef MACOSX
   #define LWAWT_PATH "/libawt_lwawt.dylib"
   #define DEFAULT_PATH LWAWT_PATH
+#elif defined(__HAIKU__)
+  #define LWAWT_PATH "/libawt_lwawt.so"
+  #define DEFAULT_PATH LWAWT_PATH
 #else
   #define XAWT_PATH "/libawt_xawt.so"
   #define WLAWT_PATH "/libawt_wlawt.so"
@@ -160,6 +163,8 @@ AWT_OnLoad(JavaVM *vm, void *reserved)
 
 
 #ifdef MACOSX
+    tk = LWAWT_PATH;
+#elif defined(__HAIKU__)
     tk = LWAWT_PATH;
 #else
     tkID = AWTGetToolkitID();
