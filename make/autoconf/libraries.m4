@@ -48,6 +48,7 @@ AC_DEFUN_ONCE([LIB_DETERMINE_DEPENDENCIES],
   # Check if X11, wayland and vulkan is needed
   if test "x$OPENJDK_TARGET_OS" = xwindows ||
      test "x$OPENJDK_TARGET_OS" = xmacosx ||
+     test "x$OPENJDK_TARGET_OS" = xhaiku ||
      test "x$ENABLE_HEADLESS_ONLY" = xtrue; then
     NEEDS_LIB_X11=false
     NEEDS_LIB_SPEECHD=false
@@ -79,8 +80,9 @@ AC_DEFUN_ONCE([LIB_DETERMINE_DEPENDENCIES],
   fi
 
   # Check if cups is needed
-  if test "x$OPENJDK_TARGET_OS" = xwindows; then
-    # Windows have a separate print system
+  if test "x$OPENJDK_TARGET_OS" = xwindows ||
+     test "x$OPENJDK_TARGET_OS" = xhaiku; then
+    # Windows and Haiku have a separate print system
     NEEDS_LIB_CUPS=false
   else
     NEEDS_LIB_CUPS=true
@@ -174,6 +176,10 @@ AC_DEFUN_ONCE([LIB_SETUP_LIBRARIES],
   # perfstat lib
   if test "x$OPENJDK_TARGET_OS" = xaix; then
     BASIC_JVM_LIBS="$BASIC_JVM_LIBS -lperfstat"
+  fi
+
+  if test "x$OPENJDK_TARGET_OS" = xhaiku; then
+    BASIC_JVM_LIBS="$BASIC_JVM_LIBS -lnetwork"
   fi
 
   if test "x$OPENJDK_TARGET_OS" = xwindows; then
