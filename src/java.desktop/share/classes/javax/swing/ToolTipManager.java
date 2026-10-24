@@ -366,6 +366,18 @@ public final class ToolTipManager extends MouseAdapter implements MouseMotionLis
                 // we want to know when the mouse enters that window.
                 tipWindow.getComponent().addMouseListener(this);
             }
+            if (isTooltipPositionedRelatively() && tipWindow.getComponent() instanceof RootPaneContainer container) {
+                // The compositor flips the tooltip up when there is no space below. Make it flip above
+                // the mouse pointer rather than above its own top-left corner, which would cover the pointer.
+                Integer anchorHeight = null;
+                if (preferredLocation == null && mouseEvent != null) {
+                    int belowMouse = location.y - (screenLocation.y + mouseEvent.getY());
+                    if (belowMouse > 0) {
+                        anchorHeight = belowMouse + 4;
+                    }
+                }
+                container.getRootPane().putClientProperty("wlawt.popup_anchor_height", anchorHeight);
+            }
             tipWindow.show();
 
             Window componentWindow = SwingUtilities.windowForComponent(
@@ -597,6 +609,7 @@ public final class ToolTipManager extends MouseAdapter implements MouseMotionLis
             // the "mouse enter" event. It usually doesn't take long;
             // in fact, that event is probably in the queue already.
             hideAttemptsCounter = 3;
+            hideCandidate = insideComponent;
             SwingUtilities.invokeLater(this::maybeHideTipWindow);
         } else if (shouldHide) {
             enterTimer.stop();
@@ -613,14 +626,32 @@ public final class ToolTipManager extends MouseAdapter implements MouseMotionLis
 
     private int hideAttemptsCounter = 0;
     private boolean tooltipWindowEntered = false;
+    private JComponent hideCandidate;
     private void maybeHideTipWindow() {
         if (tooltipWindowEntered) {
             // Don't hide as the mouse is within the tooltip bounds
             hideAttemptsCounter = 0;
+            hideCandidate = null;
         } else if (hideAttemptsCounter-- > 0) {
             SwingUtilities.invokeLater(this::maybeHideTipWindow);
         } else {
+            JComponent exitedComponent = hideCandidate;
+            hideCandidate = null;
+            if (insideComponent != exitedComponent) {
+                // The mouse has already entered another component, which now owns the tooltip
+                return;
+            }
+            // Same as the immediate hide in mouseExited(): without exitTimer, showImmediately
+            // would never be reset and all subsequent tooltips would be shown without initial delay
+            enterTimer.stop();
+            if (insideComponent != null) {
+                insideComponent.removeMouseMotionListener(this);
+            }
+            insideComponent = null;
+            toolTipText = null;
+            mouseEvent = null;
             hideTipWindow();
+            exitTimer.restart();
         }
     }
 

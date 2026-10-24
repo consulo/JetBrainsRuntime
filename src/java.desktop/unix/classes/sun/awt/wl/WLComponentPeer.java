@@ -98,6 +98,10 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
     private static final PlatformLogger popupLog = PlatformLogger.getLogger("sun.awt.wl.popup.WLComponentPeer");
 
     public static final String POPUP_POSITION_UNCONSTRAINED_CLIENT_PROPERTY = "wlawt.popup_position_unconstrained";
+    // Integer, in Java units: height of the area right above the popup's location that the popup
+    // must not cover. When the compositor flips the popup vertically (not enough space below),
+    // the popup is placed above that area instead of above its own top-left corner.
+    public static final String POPUP_ANCHOR_HEIGHT_CLIENT_PROPERTY = "wlawt.popup_anchor_height";
     public static final String WINDOW_SHADOW_PROPERTY = "Window.shadow";
 
     protected static final int MINIMUM_WIDTH = 1;
@@ -423,6 +427,19 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
         return false;
     }
 
+    private int getPopupAnchorHeight(Point nativeLocation) {
+        if (SunToolkit.isInstanceOf(target, "javax.swing.RootPaneContainer")) {
+            javax.swing.JRootPane rootpane = ((javax.swing.RootPaneContainer) target).getRootPane();
+            Object prop = rootpane.getClientProperty(POPUP_ANCHOR_HEIGHT_CLIENT_PROPERTY);
+            if (prop instanceof Integer height && height > 0) {
+                // The anchor rectangle must not extend outside the parent's window geometry
+                return Math.max(0, Math.min(javaUnitsToSurfaceUnits(height), nativeLocation.y));
+            }
+        }
+
+        return 0;
+    }
+
     protected void wlSetVisible(boolean v) {
         // TODO: this whole method should be moved to WLWindowPeer
         synchronized (getStateLock()) {
@@ -459,7 +476,8 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
                     Window toplevel = getToplevelFor(popup.getParent());
                     Point nativeLocation = nativeLocationForPopup(popup, toplevel);
                     nativeCreatePopup(nativePtr, getNativePtrFor(toplevel), wlSurfacePtr,
-                            thisWidth, thisHeight, nativeLocation.x, nativeLocation.y, isUnconstrained);
+                            thisWidth, thisHeight, nativeLocation.x, nativeLocation.y,
+                            getPopupAnchorHeight(nativeLocation), isUnconstrained);
                 } else {
                     String appId = kwinAppId != null ? kwinAppId : WLToolkit.getApplicationID();
                     nativeCreateWindow(nativePtr, getParentNativePtr(target), wlSurfacePtr,
@@ -553,7 +571,8 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
         Window toplevel = getToplevelFor(popup.getParent());
         Point nativeLocation = nativeLocationForPopup(popup, toplevel);
         boolean isUnconstrained = isPopupPositionUnconstrained();
-        nativeRepositionWLPopup(nativePtr, surfaceWidth, surfaceHeight, nativeLocation.x, nativeLocation.y, isUnconstrained);
+        nativeRepositionWLPopup(nativePtr, surfaceWidth, surfaceHeight, nativeLocation.x, nativeLocation.y,
+                getPopupAnchorHeight(nativeLocation), isUnconstrained);
     }
 
     private void doRepositionPopup() {
@@ -1272,11 +1291,13 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
     protected native void nativeCreatePopup(long ptr, long parentPtr, long wlSurfacePtr,
                                             int width, int height,
                                             int offsetX, int offsetY,
+                                            int anchorHeight,
                                             boolean isUnconstrained);
 
     protected native void nativeRepositionWLPopup(long ptr,
                                                   int width, int height,
                                                   int offsetX, int offsetY,
+                                                  int anchorHeight,
                                                   boolean isUnconstrained);
     protected native void nativeHideFrame(long ptr);
 
