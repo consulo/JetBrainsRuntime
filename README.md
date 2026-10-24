@@ -1,5 +1,3 @@
-[![official JetBrains project](http://jb.gg/badges/official.svg)](https://confluence.jetbrains.com/display/ALL/JetBrains+on+GitHub)
-
 # Welcome to OpenJDK 25 Updates!
 
 The JDK 25 Updates project uses two GitHub repositories.
