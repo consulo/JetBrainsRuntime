@@ -358,15 +358,16 @@ public final class ToolTipManager extends MouseAdapter implements MouseMotionLis
                     location.y);
             popupFactory.setPopupType(PopupFactory.LIGHT_WEIGHT_POPUP);
 
-            if (isTooltipPositionedRelatively() && tipWindow.getComponent() != null) {
+            Component tipWindowComponent = getTipWindowComponent();
+            if (isTooltipPositionedRelatively() && tipWindowComponent != null) {
                 // When only relative positioning is available, we cannot know if
                 // the mouse is still over the "hot spot" area where tooltip needs
                 // to be shown. Instead, we allow the tooltip to remain visible
                 // as long as the mouse is over the tooltip window. To implement that,
                 // we want to know when the mouse enters that window.
-                tipWindow.getComponent().addMouseListener(this);
+                tipWindowComponent.addMouseListener(this);
             }
-            if (isTooltipPositionedRelatively() && tipWindow.getComponent() instanceof RootPaneContainer container) {
+            if (isTooltipPositionedRelatively() && tipWindowComponent instanceof RootPaneContainer container) {
                 // The compositor flips the tooltip up when there is no space below. Make it flip above
                 // the mouse pointer rather than above its own top-left corner, which would cover the pointer.
                 Integer anchorHeight = null;
@@ -401,8 +402,9 @@ public final class ToolTipManager extends MouseAdapter implements MouseMotionLis
                 window.removeMouseListener(this);
                 window = null;
             }
-            if (isTooltipPositionedRelatively() && tipWindow.getComponent() != null) {
-                tipWindow.getComponent().removeMouseListener(this);
+            Component tipWindowComponent = getTipWindowComponent();
+            if (isTooltipPositionedRelatively() && tipWindowComponent != null) {
+                tipWindowComponent.removeMouseListener(this);
             }
             tipWindow.hide();
             tipWindow = null;
@@ -480,7 +482,7 @@ public final class ToolTipManager extends MouseAdapter implements MouseMotionLis
     public void mouseEntered(MouseEvent event) {
         if (isTooltipPositionedRelatively()) {
             var source = event.getSource();
-            var tooltipComp = tipWindow != null ? tipWindow.getComponent() : null;
+            var tooltipComp = getTipWindowComponent();
             tooltipWindowEntered = source == tooltipComp;
         }
         initiateToolTip(event);
@@ -597,7 +599,7 @@ public final class ToolTipManager extends MouseAdapter implements MouseMotionLis
                 }
             }
         } else if (isTooltipPositionedRelatively()) {
-            boolean hasExitedTooltipWindow = tipWindow != null && tipWindow.getComponent() == event.getSource();
+            boolean hasExitedTooltipWindow = tipWindow != null && getTipWindowComponent() == event.getSource();
             if (hasExitedTooltipWindow) {
                 tooltipWindowEntered = false;
                 shouldHideImmediately = true;
@@ -622,6 +624,27 @@ public final class ToolTipManager extends MouseAdapter implements MouseMotionLis
             hideTipWindow();
             exitTimer.restart();
         }
+    }
+
+    /**
+     * Returns the heavyweight window of the current tooltip popup, if any.
+     * Popups that wrap another popup (e.g. ones created by a custom PopupFactory
+     * of a look and feel) do not expose the wrapped component via Popup.getComponent(),
+     * so fall back to the window the tooltip is actually shown in.
+     */
+    private Component getTipWindowComponent() {
+        if (tipWindow == null) {
+            return null;
+        }
+        Component component = tipWindow.getComponent();
+        if (component == null && tip != null) {
+            Window tipAncestor = SwingUtilities.getWindowAncestor(tip);
+            Window componentWindow = insideComponent != null ? SwingUtilities.getWindowAncestor(insideComponent) : null;
+            if (tipAncestor != null && tipAncestor != componentWindow && tipAncestor.getType() == Window.Type.POPUP) {
+                component = tipAncestor;
+            }
+        }
+        return component;
     }
 
     private int hideAttemptsCounter = 0;
