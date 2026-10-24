@@ -85,7 +85,7 @@ public abstract class SunGraphicsEnvironment extends GraphicsEnvironment
 
         uiScaleEnabled = FontUtilities.isMacOSX ||
             ("true".equals(uiScaleEnabledPropValue) &&
-                (isWindows_8_1_orUpper() || FontUtilities.isLinux));
+                (isWindows_8_1_orUpper() || FontUtilities.isLinux || FontUtilities.isHaiku));
 
         if (uiScaleEnabled && FontUtilities.isWindows) {
             System.setProperty("swing.bufferPerWindow", "false"); // todo: until JRE-489 is fixed
