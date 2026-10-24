@@ -34,6 +34,7 @@ import javax.swing.*;
 
 import sun.awt.*;
 import sun.awt.AWTAccessor.ComponentAccessor;
+import sun.awt.FullScreenCapable;
 import sun.java2d.*;
 import sun.java2d.loops.Blit;
 import sun.java2d.loops.CompositeType;
