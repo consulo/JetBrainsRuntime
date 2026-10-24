@@ -213,6 +213,7 @@ ContainsLibJVM(const char *env) {
     return JNI_FALSE;
 }
 
+#ifdef __linux__
 static int
 HaveGLibCCompatLibrary(struct dl_phdr_info* info, size_t size, void* data)
 {
@@ -244,6 +245,7 @@ UsingMusl(void) {
 
     return (found_gcompat != 0);
 }
+#endif /* __linux__ */
 
 
 /*
@@ -268,9 +270,11 @@ RequiresSetenv(const char *jvmpath) {
     return JNI_TRUE;
 #endif
 
+#ifdef __linux__
     if (UsingMusl()) {
         return JNI_TRUE;
     }
+#endif
 
     llp = getenv("LD_LIBRARY_PATH");
     /* no environment variable is a good environment variable */

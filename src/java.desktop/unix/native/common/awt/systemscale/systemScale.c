@@ -239,7 +239,14 @@ double getScaleEnvVar(const char *name, double default_value) {
     char *uiScale = getenv(name);
     if (uiScale != NULL) {
         locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", NULL);
+#ifdef __HAIKU__
+        // Haiku has no strtod_l(); switch the thread locale instead
+        locale_t old_locale = uselocale(c_locale);
+        double scale = strtod(uiScale, NULL);
+        uselocale(old_locale);
+#else
         double scale = strtod_l(uiScale, NULL, c_locale);
+#endif
         freelocale(c_locale);
         if (scale > 0) {
             return scale;

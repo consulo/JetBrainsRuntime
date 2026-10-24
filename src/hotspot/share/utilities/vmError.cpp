@@ -2458,6 +2458,13 @@ static void print_process_memory_usage_platform(outputStream *st)
 }
 #endif
 
+#if !defined(LINUX) && !defined(_WINDOWS) && !defined(__APPLE__)
+static void print_process_memory_usage_platform(outputStream *st)
+{
+  st->print_cr("not available on this platform");
+}
+#endif
+
 void VMError::print_process_memory_usage(outputStream *st)
 {
   st->print_cr("Process memory usage:");

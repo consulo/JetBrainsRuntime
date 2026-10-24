@@ -115,7 +115,7 @@ void
 SplashWindow::UpdateImage()
 {
     SplashLock(fSplash);
-    SplashUpdateScreenData(fSplash);
+    SplashUpdateScreenData(fSplash, false);
 
     BRect bounds = BRect(0, 0, fSplash->width - 1, fSplash->height - 1);
     BBitmap* bitmap = new BBitmap(bounds, 0, B_RGBA32, fSplash->screenStride,

@@ -31,7 +31,9 @@
 #include <jni_util.h>
 #include <jvm.h>
 #include "gdefs.h"
+#ifndef __HAIKU__
 #include "sun_awt_PlatformGraphicsInfo.h"
+#endif
 #include <sys/param.h>
 #include <sys/utsname.h>
 
@@ -39,7 +41,7 @@
 #include "porting_aix.h" /* For the 'dladdr' function. */
 #endif
 
-#ifndef MACOSX
+#if !defined(MACOSX) && !defined(__HAIKU__)
 #ifndef STATIC_BUILD
 
 #define CHECK_EXCEPTION_FATAL(env, message) \

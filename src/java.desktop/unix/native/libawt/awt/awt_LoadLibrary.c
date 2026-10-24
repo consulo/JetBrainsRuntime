@@ -31,7 +31,9 @@
 #include <jni_util.h>
 #include <jvm.h>
 #include "gdefs.h"
+#ifndef __HAIKU__
 #include "sun_awt_PlatformGraphicsInfo.h"
+#endif
 
 #if defined(_WIN32) || defined(MACOSX)
 #define DISABLE_FONTCONFIG
