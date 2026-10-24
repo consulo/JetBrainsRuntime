@@ -62,9 +62,12 @@ import java.awt.event.FocusEvent;
 import java.awt.event.MouseEvent;
 import java.awt.event.WindowEvent;
 import java.awt.geom.Path2D;
+import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import java.awt.peer.ComponentPeer;
+import java.awt.peer.WindowPeer;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
 import java.util.List;
 
 public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber, LWWindowPeerAPI {
@@ -82,6 +85,8 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
     private Path2D.Double topRightMask;     // guarded by stateLock
     private Path2D.Double bottomLeftMask;   // guarded by stateLock
     private Path2D.Double bottomRightMask;  // guarded by stateLock
+    private Path2D.Double borderPath;  // guarded by stateLock
+    private Color borderColor;  // guarded by stateLock
     private SunGraphics2D graphics;         // guarded by stateLock
 
     private final LWChildPeers childPeers = new LWChildPeers(new Object());
@@ -135,6 +140,9 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
             requestWindowFocus();
         }
         super.wlSetVisible(v);
+        if (v) {
+            updateIconImages();
+        }
         final AWTAccessor.ComponentAccessor acc = AWTAccessor.getComponentAccessor();
         for (Component c : getWindow().getComponents()) {
             ComponentPeer cPeer = acc.getPeer(c);
@@ -212,37 +220,57 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
     @Override
     public void updateIconImages() {
         List<Image> iconImages = getWindow().getIconImages();
-        if (iconImages == null || iconImages.isEmpty()) {
-            setIcon(0, null);
+        List<Image> suitableIconImages = new ArrayList<Image>();
+
+        if (iconImages != null) {
+            for (Image image : iconImages) {
+                if (image == null) {
+                    continue;
+                }
+                int width = image.getWidth(null);
+                int height = image.getHeight(null);
+                if (width > 0 && height > 0 && width == height) {
+                    suitableIconImages.add(image);
+                }
+            }
+        }
+
+        if (suitableIconImages.isEmpty()) {
+            setIcon(null, null);
             return;
         }
 
-        Image image = iconImages.stream()
-                .filter(x -> x.getWidth(null) > 0 && x.getHeight(null) > 0)
-                .filter(x -> x.getWidth(null) == x.getHeight(null))
-                .max((a, b) -> Integer.compare(a.getWidth(null), b.getWidth(null)))
-                .orElse(null);
-        if (image == null) {
-            return;
+        int imageCount = suitableIconImages.size();
+        int pixelCount = 0;
+        for (Image image : suitableIconImages) {
+            int dim = image.getWidth(null); // width == height
+            pixelCount += dim * dim;
         }
 
-        int width = image.getWidth(null);
-        int height = image.getHeight(null);
-        int size = width;
+        int[] dims = new int[imageCount];
+        int[] pixels = new int[pixelCount];
 
-        BufferedImage bufferedImage;
-        if (image instanceof BufferedImage && ((BufferedImage) image).getType() == BufferedImage.TYPE_INT_ARGB) {
-            bufferedImage = (BufferedImage) image;
-        } else {
-            bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-            Graphics2D g = bufferedImage.createGraphics();
-            g.drawImage(image, 0, 0, null);
-            g.dispose();
+        int offset = 0;
+        for (int i = 0; i < imageCount; ++i) {
+            Image image = suitableIconImages.get(i);
+            int dim = image.getWidth(null); // width == height
+            dims[i] = dim;
+
+            BufferedImage bufferedImage;
+            if (image instanceof BufferedImage && ((BufferedImage) image).getType() == BufferedImage.TYPE_INT_ARGB) {
+                bufferedImage = (BufferedImage) image;
+            } else {
+                bufferedImage = new BufferedImage(dim, dim, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D g = bufferedImage.createGraphics();
+                g.drawImage(image, 0, 0, null);
+                g.dispose();
+            }
+
+            bufferedImage.getRGB(0, 0, dim, dim, pixels, offset, dim);
+            offset += dim * dim;
         }
 
-        int[] pixels = new int[width * height];
-        bufferedImage.getRGB(0, 0, width, height, pixels, 0, width);
-        setIcon(size, pixels);
+        setIcon(dims, pixels);
     }
 
     @Override
@@ -259,7 +287,7 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
 
     @Override
     public void updateWindow() {
-        if (roundedCornersRequested() && canPaintRoundedCorners()) {
+        if (needToPaintRoundedCorners()) {
             paintRoundCorners();
         }
         commitToServer();
@@ -274,13 +302,13 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
     @Override
     public void dispose() {
         ungrab(true);
-        resetCornerMasks();
+        resetCornerPaths();
         super.dispose();
     }
 
     @Override
     void updateSurfaceData() {
-        resetCornerMasks();
+        resetCornerPaths();
         super.updateSurfaceData();
     }
 
@@ -406,19 +434,20 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
         return null;
     }
 
-    private boolean canPaintRoundedCorners() {
-        int roundedCornerSize = WLRoundedCornersManager.roundCornerRadiusFor(roundedCornerKind);
-        // Note: You would normally get a transparency-capable color model when using
-        // the default graphics configuration
-        return surfaceData.getColorModel().hasAlpha()
-                && getWidth() > roundedCornerSize * 2
-                && getHeight() > roundedCornerSize * 2;
-    }
-
-    protected boolean roundedCornersRequested() {
+    private boolean needToPaintRoundedCorners() {
         synchronized (getStateLock()) {
-            return roundedCornerKind == WLRoundedCornersManager.RoundedCornerKind.FULL
-                    || roundedCornerKind == WLRoundedCornersManager.RoundedCornerKind.SMALL;
+            if (!(roundedCornerKind instanceof WLRoundedCornersManager.CustomRoundedCorners customCorners)) return false;
+            int roundedCornerSize = customCorners.radius();
+            int borderWidth = customCorners.borderWidth();
+            int width = getWidth();
+            int height = getHeight();
+            // Note: You would normally get a transparency-capable color model when using
+            // the default graphics configuration
+            return surfaceData.getColorModel().hasAlpha()
+                    && roundedCornerSize > 0
+                    && borderWidth < roundedCornerSize
+                    && width > roundedCornerSize * 2
+                    && height > roundedCornerSize * 2;
         }
     }
 
@@ -432,26 +461,85 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
         synchronized (getStateLock()) {
             if (roundedCornerKind != kind) {
                 roundedCornerKind = kind;
-                resetCornerMasks();
+                resetCornerPaths();
             }
         }
     }
 
-    private void createCornerMasks() {
+    private void createCornerPaths() {
         if (graphics == null) {
             graphics = new SunGraphics2D(surfaceData, Color.WHITE, Color.BLACK, null);
-            graphics.setComposite(AlphaComposite.Clear);
             graphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
             graphics.setRenderingHint(RenderingHints.KEY_ALPHA_INTERPOLATION, RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
         }
 
         if (topLeftMask == null) {
-            createCornerMasks(WLRoundedCornersManager.roundCornerRadiusFor(roundedCornerKind));
+            createCornerPaths((WLRoundedCornersManager.CustomRoundedCorners)roundedCornerKind);
         }
     }
 
-    private void resetCornerMasks() {
+    private void createCornerPaths(WLRoundedCornersManager.CustomRoundedCorners customCorners) {
+        int w = getWidth();
+        int h = getHeight();
+        int radius = customCorners.radius();
+
+        // Imitate what RoundRectangle2D does under the hood (using cubic curves),
+        // but without the entire rectangle to keep the corners local.
+
+        // We need just a single control value for control points.
+        // It pretty much corresponds to java.awt.geom.RoundRectIterator.acv,
+        // but we multiply it by two because we use the arc radius, not the diameter like RoundRectangle2D does.
+        double control = 0.44771525016920666;
+        // The following value pretty much defines both cubic control points for every corner.
+        // For the top-left corner it's (0, rc) and (rc, 0). For others, everything's symmetric.
+        double rc = radius * control;
+
+        topLeftMask = new Path2D.Double();
+        topLeftMask.moveTo(0, 0);
+        topLeftMask.lineTo(radius, 0);
+        topLeftMask.curveTo(rc, 0, 0, rc, 0, radius);
+        topLeftMask.closePath();
+
+        topRightMask = new Path2D.Double();
+        topRightMask.moveTo(w - radius, 0);
+        topRightMask.curveTo(w - rc, 0, w, rc, w, radius);
+        topRightMask.lineTo(w, 0);
+        topRightMask.closePath();
+
+        bottomLeftMask = new Path2D.Double();
+        bottomLeftMask.moveTo(0, h - radius);
+        bottomLeftMask.curveTo(0, h - rc, rc, h, radius, h);
+        bottomLeftMask.lineTo(0, h);
+        bottomLeftMask.closePath();
+
+        bottomRightMask = new Path2D.Double();
+        bottomRightMask.moveTo(w - radius, h);
+        bottomRightMask.curveTo(w - rc, h, w, h - rc, w, h - radius);
+        bottomRightMask.lineTo(w, h);
+        bottomRightMask.closePath();
+
+        borderColor = customCorners.borderColor();
+        if (borderColor == null) return;
+
+        int borderWidth = customCorners.borderWidth();
+        borderPath = new Path2D.Double(Path2D.WIND_EVEN_ODD);
+        borderPath.append(new RoundRectangle2D.Double(
+                0, 0,
+                w, h,
+                radius * 2, radius * 2
+        ), false);
+        int innerRadius = radius - borderWidth;
+        // borderWidth is used here for both X and Y, that's actually correct, but the inspection doesn't like it
+        //noinspection SuspiciousNameCombination
+        borderPath.append(new RoundRectangle2D.Double(
+                borderWidth, borderWidth,
+                w - borderWidth * 2, h - borderWidth * 2,
+                innerRadius * 2, innerRadius * 2
+        ), false);
+    }
+
+    private void resetCornerPaths() {
         synchronized (getStateLock()) {
             if (graphics != null) graphics.dispose();
             graphics = null;
@@ -459,46 +547,26 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
             topRightMask = null;
             bottomLeftMask = null;
             bottomRightMask = null;
+            borderPath = null;
+            borderColor = null;
         }
-    }
-
-    private void createCornerMasks(int size) {
-        int w = getWidth();
-        int h = getHeight();
-
-        topLeftMask = new Path2D.Double();
-        topLeftMask.moveTo(0, 0);
-        topLeftMask.lineTo(size, 0);
-        topLeftMask.quadTo(0, 0, 0, size);
-        topLeftMask.closePath();
-
-        topRightMask = new Path2D.Double();
-        topRightMask.moveTo(w - size, 0);
-        topRightMask.quadTo(w, 0, w, size);
-        topRightMask.lineTo(w, 0);
-        topRightMask.closePath();
-
-        bottomLeftMask = new Path2D.Double();
-        bottomLeftMask.moveTo(0, h - size);
-        bottomLeftMask.quadTo(0, h, size, h);
-        bottomLeftMask.lineTo(0, h);
-        bottomLeftMask.closePath();
-
-        bottomRightMask = new Path2D.Double();
-        bottomRightMask.moveTo(w - size, h);
-        bottomRightMask.quadTo(w, h, w, h - size);
-        bottomRightMask.lineTo(w, h);
-        bottomRightMask.closePath();
     }
 
     private void paintRoundCorners() {
         synchronized (getStateLock()) {
-            createCornerMasks();
+            createCornerPaths();
 
+            graphics.setComposite(AlphaComposite.Clear);
             graphics.fill(topLeftMask);
             graphics.fill(topRightMask);
             graphics.fill(bottomLeftMask);
             graphics.fill(bottomRightMask);
+
+            if (borderColor == null) return;
+
+            graphics.setComposite(AlphaComposite.SrcOver); // the default one for Graphics
+            graphics.setColor(borderColor);
+            graphics.fill(borderPath);
         }
     }
 
@@ -680,8 +748,11 @@ public class WLWindowPeer extends WLComponentPeer implements SurfacePixelGrabber
 
     @Override
     public Point windowToLocal(int x, int y, LWWindowPeerAPI wp) {
-        // For WLWindowPeer window coordinates are already local coordinates - no transformation needed.
-        return new Point(x, y);
+        Point p = new Point(x, y);
+        Point thisLocation = getFakeLocationOnScreen();
+        Point thatLocation = ((WLComponentPeer) wp).getFakeLocationOnScreen();
+        p.translate(thatLocation.x - thisLocation.x, thatLocation.y - thisLocation.y);
+        return new Point(p);
     }
 
     @Override

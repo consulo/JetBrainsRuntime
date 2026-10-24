@@ -47,7 +47,9 @@ AC_DEFUN_ONCE([LIB_SETUP_VULKAN],
       AC_MSG_CHECKING([for ${with_vulkan_include}/vulkan/vulkan.h])
       if test -s "${with_vulkan_include}/vulkan/vulkan.h"; then
         VULKAN_ENABLED=true
-        VULKAN_FLAGS="-I${with_vulkan_include}"
+        VULKAN_INCLUDE_DIR="${with_vulkan_include}"
+        UTIL_FIXUP_PATH(VULKAN_INCLUDE_DIR)
+        VULKAN_FLAGS="-I${VULKAN_INCLUDE_DIR}"
         AC_MSG_RESULT([yes])
       else
         AC_MSG_RESULT([no])
@@ -60,7 +62,9 @@ AC_DEFUN_ONCE([LIB_SETUP_VULKAN],
       AC_MSG_CHECKING([for ${VULKAN_SDK}/include/vulkan/vulkan.h])
       if test -s "${VULKAN_SDK}/include/vulkan/vulkan.h"; then
         VULKAN_ENABLED=true
-        VULKAN_FLAGS="-I${VULKAN_SDK}/include"
+        VULKAN_INCLUDE_DIR="${VULKAN_SDK}/include"
+        UTIL_FIXUP_PATH(VULKAN_INCLUDE_DIR)
+        VULKAN_FLAGS="-I${VULKAN_INCLUDE_DIR}"
         AC_MSG_RESULT([yes])
       else
         AC_MSG_RESULT([no])
@@ -89,7 +93,7 @@ AC_DEFUN_ONCE([LIB_SETUP_VULKAN],
     if (test "x${with_vulkan_shader_compiler}" = x || test "x${with_vulkan_shader_compiler}" = xglslc); then
       UTIL_LOOKUP_PROGS(GLSLC, glslc)
       SHADER_COMPILER="$GLSLC"
-      VULKAN_SHADER_COMPILER="glslc --target-env=vulkan1.2 -mfmt=num"
+      VULKAN_SHADER_COMPILER="glslc$EXECUTABLE_SUFFIX --target-env=vulkan1.2 -mfmt=num"
     fi
 
     # Check glslangValidator
@@ -98,7 +102,7 @@ AC_DEFUN_ONCE([LIB_SETUP_VULKAN],
       UTIL_LOOKUP_PROGS(GLSLANG, glslangValidator)
       SHADER_COMPILER="$GLSLANG"
       # Newer glslangValidator could use -P\"\#extension GL_GOOGLE_include_directive: require\"
-      VULKAN_SHADER_COMPILER="glslangValidator --target-env vulkan1.2 -x"
+      VULKAN_SHADER_COMPILER="glslangValidator$EXECUTABLE_SUFFIX --target-env vulkan1.2 -x"
     fi
 
     if test "x$SHADER_COMPILER" = x; then

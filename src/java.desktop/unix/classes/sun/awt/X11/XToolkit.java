@@ -151,6 +151,7 @@ import sun.awt.util.PerformanceLogger;
 import sun.awt.util.ThreadGroupUtils;
 import sun.font.FontConfigManager;
 import sun.java2d.SunGraphicsEnvironment;
+import sun.java2d.vulkan.VKEnv;
 import sun.print.PrintJob2D;
 import sun.util.logging.PlatformLogger;
 
@@ -507,6 +508,10 @@ public final class XToolkit extends UNIXToolkit implements Runnable {
             device = (X11GraphicsDevice) localEnv.getDefaultScreenDevice();
             display = device.getDisplay();
             setupModifierMap();
+            VKEnv.init(() -> {
+                VKEnv.requireForceVulkan("XToolkit");
+                return VKEnv.initPlatformX11(display);
+            });
             initIDs();
             setBackingStoreType();
         }
@@ -548,6 +553,15 @@ public final class XToolkit extends UNIXToolkit implements Runnable {
         MotifColorUtilities.loadSystemColors(systemColors);
     }
 
+    @Override
+    public boolean needUpdateWindow() {
+        return VKEnv.isPresentationEnabled();
+    }
+
+    @Override
+    public boolean needUpdateWindowAfterPaint() {
+        return VKEnv.isPresentationEnabled();
+    }
 
 
     static void initUIDefaults() {
@@ -2188,6 +2202,8 @@ public final class XToolkit extends UNIXToolkit implements Runnable {
     static void setupModifierMap() {
         final int metaL = keysymToPrimaryKeycode(XKeySymConstants.XK_Meta_L);
         final int metaR = keysymToPrimaryKeycode(XKeySymConstants.XK_Meta_R);
+        final int superL = keysymToPrimaryKeycode(XKeySymConstants.XK_Super_L);
+        final int superR = keysymToPrimaryKeycode(XKeySymConstants.XK_Super_R);
         final int altL = keysymToPrimaryKeycode(XKeySymConstants.XK_Alt_L);
         final int altR = keysymToPrimaryKeycode(XKeySymConstants.XK_Alt_R);
         final int numLock = keysymToPrimaryKeycode(XKeySymConstants.XK_Num_Lock);
@@ -2220,7 +2236,8 @@ public final class XToolkit extends UNIXToolkit implements Runnable {
                         break;
                     }
                     if (metaMask == 0 &&
-                        (keycode == metaL || keycode == metaR))
+                        (keycode == metaL || keycode == metaR ||
+                         keycode == superL || keycode == superR))
                     {
                         metaMask = modmask[modn];
                         break;

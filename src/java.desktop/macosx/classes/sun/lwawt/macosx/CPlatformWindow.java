@@ -752,15 +752,6 @@ public class CPlatformWindow extends CFRetainedResource implements PlatformWindo
 
         // Manage the extended state when showing
         if (visible) {
-                /* Frame or Dialog should be set property WINDOW_FULLSCREENABLE to true if the
-                Frame or Dialog is resizable.
-                */
-            final boolean resizable = (target instanceof Frame) ? ((Frame)target).isResizable() :
-                    ((target instanceof Dialog) ? ((Dialog)target).isResizable() : false);
-            if (resizable) {
-                setCanFullscreen(true);
-            }
-
             // Apply the extended state as expected in shared code
             if (target instanceof Frame) {
                 if (!wasMaximized && isMaximized()) {
@@ -851,6 +842,19 @@ public class CPlatformWindow extends CFRetainedResource implements PlatformWindo
                                                   blockerPtr);
                 });
             });
+        }
+
+        // Manage the extended state when showing
+        if (visible) {
+            /* Frame or Dialog should be set property WINDOW_FULLSCREENABLE to true if the
+            Frame or Dialog is resizable.
+            */
+            final boolean resizable = (target instanceof Frame) ? ((Frame)target).isResizable() :
+                    ((target instanceof Dialog) ? ((Dialog)target).isResizable() : false);
+            if (resizable) {
+                // after NSWindow.order...
+                setCanFullscreen(true);
+            }
         }
 
         nativeSynthesizeMouseEnteredExitedEvents();
@@ -1019,7 +1023,8 @@ public class CPlatformWindow extends CFRetainedResource implements PlatformWindo
     // window till the target space becomes active.
     private boolean delayShowing() {
         AtomicBoolean ref = new AtomicBoolean(false);
-        execute(ptr -> ref.set(nativeDelayShowing(ptr)));
+        // JBR-7693: may block EDT (as appkit waits on NSWindow.delayShowing)
+        AWTThreading.executeWaitToolkit(() -> execute(ptr -> ref.set(nativeDelayShowing(ptr))));
         return ref.get();
     }
 

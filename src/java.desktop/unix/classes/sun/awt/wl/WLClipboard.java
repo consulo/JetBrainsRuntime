@@ -31,16 +31,20 @@ import sun.util.logging.PlatformLogger;
 import java.awt.datatransfer.FlavorTable;
 import java.awt.datatransfer.Transferable;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 public final class WLClipboard extends SunClipboard {
     private static final PlatformLogger log = PlatformLogger.getLogger("sun.awt.wl.WLClipboard");
 
-    private static final String plainTextUtf8 = "text/plain;charset=utf-8";
-    private static final String utf8String = "UTF8_STRING";
-
+    // These are ordered in order of preference, with more standardized spellings first
+    private static final List<String> utf8Mimes = Arrays.asList(
+            "text/plain;charset=utf-8",
+            "UTF8_STRING",
+            "text/plain;charset=UTF-8"
+    );
 
     private final WLDataDevice dataDevice;
 
@@ -48,18 +52,24 @@ public final class WLClipboard extends SunClipboard {
     // false otherwise (the regular clipboard).
     private final boolean isPrimary;
 
-    private final Object dataLock = new Object();
-
     // Latest active data offer to us, containing up-to-date clipboard content,
     // as provided by the Wayland compositor.
     // If null, there's no clipboard data available.
-    // Guarded by dataLock.
+    // Guarded by 'this'.
     private WLDataOffer clipboardDataOfferedToUs;
 
     // Clipboard data source we are providing to the Wayland compositor.
     // If null, we are not offering any clipboard data at the moment.
-    // Guarded by dataLock.
+    // Guarded by 'this'.
     private WLDataSource ourDataSource;
+
+    // A Transferable that we should provide to the compositor, but can't for now,
+    // since we're waiting for a valid serial
+    // Guarded by 'this'.
+    private Transferable pendingTransferable;
+
+    // Guarded by 'this'.
+    private WLInputSerial lastSuccessfulSerial = WLInputSerial.INVALID;
 
     static {
         flavorTable = DataTransferer.adaptFlavorMap(getDefaultFlavorTable());
@@ -77,8 +87,18 @@ public final class WLClipboard extends SunClipboard {
         }
     }
 
-    private int getProtocol() {
+    private int getClipboardSelectionType() {
         if (isPrimary) {
+            return WLDataDevice.CLIPBOARD_SELECTION_PRIMARY;
+        } else {
+            return WLDataDevice.CLIPBOARD_SELECTION_DEFAULT;
+        }
+    }
+
+    private int getProtocol() {
+        if (dataDevice.isProtocolSupported(WLDataDevice.DATA_TRANSFER_PROTOCOL_DATA_CONTROL)) {
+            return WLDataDevice.DATA_TRANSFER_PROTOCOL_DATA_CONTROL;
+        } else if (isPrimary) {
             return WLDataDevice.DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION;
         } else {
             return WLDataDevice.DATA_TRANSFER_PROTOCOL_WAYLAND;
@@ -107,13 +127,7 @@ public final class WLClipboard extends SunClipboard {
         }
     }
 
-    /**
-     * Called to make the new clipboard contents known to Wayland.
-     *
-     * @param contents clipboard's contents.
-     */
-    @Override
-    protected void setContentsNative(Transferable contents) {
+    private WLInputSerial pickSerial() {
         // The server requires "serial number of the event that triggered this request"
         // as a proof of the right to copy data.
 
@@ -121,55 +135,109 @@ public final class WLClipboard extends SunClipboard {
         // so the following is a speculation based on experiments.
         // The worst case is that a "wrong" serial will be silently ignored, and our clipboard
         // will be out of sync with the real one that Wayland maintains.
-        long eventSerial = isPrimary
-                ? WLToolkit.getInputState().pointerButtonSerial()
-                : WLToolkit.getInputState().keySerial();
-        if (!isPrimary && eventSerial == 0) {
-            // The "regular" clipboard's content can be changed with either a mouse click
-            // (like on a menu item) or with the keyboard (Ctrl-C).
-            eventSerial = WLToolkit.getInputState().pointerButtonSerial();
-        }
-        if (log.isLoggable(PlatformLogger.Level.FINE)) {
-            log.fine("Clipboard: About to offer new contents using Wayland event serial " + eventSerial);
-        }
-        if (eventSerial != 0) {
-            WLDataTransferer wlDataTransferer = (WLDataTransferer) DataTransferer.getInstance();
-            long[] formats = wlDataTransferer.getFormatsForTransferableAsArray(contents, flavorTable);
+        WLInputSerial serial = WLInputSerial.INVALID;
 
-            if (log.isLoggable(PlatformLogger.Level.FINE)) {
-                log.fine("Clipboard: New one is available in these integer formats: " + Arrays.toString(formats));
-            }
-            notifyOfNewFormats(formats);
-
-            if (formats.length > 0) {
-                if (log.isLoggable(PlatformLogger.Level.FINE)) {
-                    log.fine("Clipboard: Offering new contents (" + contents + ")");
-                }
-
-                WLDataSource newOffer = new WLDataSource(dataDevice, getProtocol(), contents) {
-                    @Override
-                    protected void handleCancelled() {
-                        synchronized (dataLock) {
-                            if (ourDataSource == this) {
-                                ourDataSource = null;
-                            }
-                            destroy();
-                        }
-                    }
-                };
-
-                synchronized (dataLock) {
-                    if (ourDataSource != null) {
-                        ourDataSource.destroy();
-                    }
-                    ourDataSource = newOffer;
-                    dataDevice.setSelection(getProtocol(), newOffer, eventSerial);
-                }
-            }
+        if (isPrimary) {
+            serial = WLToolkit.getInputState().pointerButtonSerial();
         } else {
-            this.owner = null;
-            this.contents = null;
+            serial = WLToolkit.getInputState().keySerial().freshOrElse(WLToolkit.getInputState().pointerButtonSerial());
         }
+
+        serial = serial.freshOrElse(WLToolkit.getInputState().latestInputSerial());
+
+        synchronized (this) {
+            serial = serial.newerOrElse(lastSuccessfulSerial, WLToolkit.getInputState().latestInputSerial());
+            if (serial.isNewerThan(lastSuccessfulSerial)) {
+                return serial;
+            } else {
+                return WLInputSerial.INVALID;
+            }
+        }
+    }
+
+    private void doSetWaylandContents(Transferable contents, int protocol, WLInputSerial serial) {
+        if (protocol != WLDataDevice.DATA_TRANSFER_PROTOCOL_DATA_CONTROL && !serial.isValid()) {
+            return;
+        }
+
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("Clipboard: About to offer new contents using Wayland event serial " + serial + ", protocol " + protocol);
+        }
+
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("Clipboard: Offering new contents (" + contents + ")");
+        }
+
+        WLDataSource newOffer = new WLDataSource(dataDevice, protocol, contents) {
+            @Override
+            protected void handleCancelled() {
+                synchronized (WLClipboard.this) {
+                    if (ourDataSource == this) {
+                        ourDataSource = null;
+                        // NOTE: cannot do lostOwnershipNow, because we're on the data source dispatch thread, not on EDT
+                        lostOwnershipLater(null);
+                    }
+                }
+
+                // This object is not reachable anymore, we can safely destroy it.
+                super.handleCancelled();
+            }
+        };
+
+        synchronized (this) {
+            pendingTransferable = null;
+            if (serial.isValid()) {
+                lastSuccessfulSerial = serial;
+            }
+            if (ourDataSource != null) {
+                ourDataSource.destroy();
+            }
+            ourDataSource = newOffer;
+            dataDevice.setSelection(protocol, getClipboardSelectionType(), newOffer, serial.serial());
+        }
+    }
+
+    void trySetPendingWaylandContents() {
+        int protocol = getProtocol();
+        WLInputSerial serial = WLInputSerial.INVALID;
+        if (protocol != WLDataDevice.DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+            serial = pickSerial();
+            if (!serial.isValid()) {
+                return;
+            }
+        }
+
+        synchronized (this) {
+            if (pendingTransferable == null) {
+                return;
+            }
+            doSetWaylandContents(pendingTransferable, protocol, serial);
+        }
+    }
+
+    /**
+     * Called to make the new clipboard contents known to Wayland.
+     *
+     * @param contents clipboard's contents.
+     */
+    @Override
+    protected void setContentsNative(Transferable contents) {
+        WLDataTransferer wlDataTransferer = (WLDataTransferer) DataTransferer.getInstance();
+        long[] formats = wlDataTransferer.getFormatsForTransferableAsArray(contents, flavorTable);
+
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("Clipboard: New one is available in these integer formats: " + Arrays.toString(formats));
+        }
+        notifyOfNewFormats(formats);
+
+        if (formats.length == 0) {
+            return;
+        }
+
+        synchronized (this) {
+            pendingTransferable = contents;
+        }
+        trySetPendingWaylandContents();
     }
 
     /**
@@ -181,7 +249,7 @@ public final class WLClipboard extends SunClipboard {
     protected long[] getClipboardFormats() {
         WLDataTransferer wlDataTransferer = (WLDataTransferer) DataTransferer.getInstance();
         List<String> mimes;
-        synchronized (dataLock) {
+        synchronized (this) {
             if (clipboardDataOfferedToUs == null) {
                 return new long[0];
             }
@@ -189,12 +257,14 @@ public final class WLClipboard extends SunClipboard {
             mimes = clipboardDataOfferedToUs.getMimes();
         }
 
-        var formatsSet = new HashSet<Long>();
+        var formatsSet = new LinkedHashSet<Long>();
         for (var mime : mimes) {
-            formatsSet.add(wlDataTransferer.getFormatForNativeAsLong(mime));
-            if (mime.equalsIgnoreCase(plainTextUtf8)) {
-                // some compositors (WSLg) don't advertise UTF8_STRING
-                formatsSet.add(wlDataTransferer.getFormatForNativeAsLong(utf8String));
+            if (utf8Mimes.contains(mime)) {
+                for (String utf8Mime : utf8Mimes) {
+                    formatsSet.add(wlDataTransferer.getFormatForNativeAsLong(utf8Mime));
+                }
+            } else {
+                formatsSet.add(wlDataTransferer.getFormatForNativeAsLong(mime));
             }
         }
 
@@ -211,25 +281,45 @@ public final class WLClipboard extends SunClipboard {
     @Override
     protected byte[] getClipboardData(long format) throws IOException {
         final WLDataTransferer wlDataTransferer = (WLDataTransferer) DataTransferer.getInstance();
-        final long utf8StringFormat = wlDataTransferer.getFormatForNativeAsLong(utf8String);
         WLDataOffer offer = null;
+        boolean isUtf8Format = false;
+        for (String utf8Mime : utf8Mimes) {
+            if (wlDataTransferer.getFormatForNativeAsLong(utf8Mime) == format) {
+                isUtf8Format = true;
+                break;
+            }
+        }
 
         try {
-            synchronized (dataLock) {
+            synchronized (this) {
                 offer = clipboardDataOfferedToUs.ref();
             }
 
             // Iterate over all mime types, since the mapping between mime types and java formats might not be 1:1
-            // Also treat text/plain;charset=utf-8 as UTF8_STRING
-            for (var mime : offer.getMimes()) {
+            List<String> suitableMimes = new ArrayList<>();
+            for (String mime : offer.getMimes()) {
                 long curFormat = wlDataTransferer.getFormatForNativeAsLong(mime);
-                boolean isUtf8String = mime.equalsIgnoreCase(plainTextUtf8) && utf8StringFormat == format;
+                boolean isUtf8String = isUtf8Format && utf8Mimes.contains(mime);
                 if (curFormat == format || isUtf8String) {
-                    return offer.receiveData(mime);
+                    suitableMimes.add(mime);
                 }
             }
 
-            throw new IOException("No appropriate mime type found for WLClipboard.getClipboardData with format = " + format);
+            if (suitableMimes.isEmpty()) {
+                throw new IOException("No appropriate mime type found for WLClipboard.getClipboardData with format = " + format);
+            }
+
+            if (isUtf8Format) {
+                // Prefer certain, more standardized spellings of "a UTF-8 string" over others
+                // This is a workaround for several issues (JBR-8912, JBR-10230)
+                for (String utf8Mime : utf8Mimes) {
+                    if (suitableMimes.contains(utf8Mime)) {
+                        return offer.receiveData(utf8Mime);
+                    }
+                }
+            }
+
+            return offer.receiveData(suitableMimes.getFirst());
         } finally {
             if (offer != null) {
                 offer.unref();
@@ -259,8 +349,10 @@ public final class WLClipboard extends SunClipboard {
     }
 
     void handleClipboardOffer(WLDataOffer offer /* nullable */) {
-        synchronized (dataLock) {
-            if (ourDataSource == null || !ourDataSource.isSourceFor(offer)) {
+        synchronized (this) {
+            if (ourDataSource == null) {
+                // probably not needed, the data_source.cancelled handler already calls lostOwnershipLater
+                // still, there's no harm in doing this
                 lostOwnershipNow(null);
             }
 

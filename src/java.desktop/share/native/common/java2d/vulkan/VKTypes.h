@@ -26,11 +26,12 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 
-typedef enum {
+enum {
     ALPHA_TYPE_PRE_MULTIPLIED = 0,
     ALPHA_TYPE_STRAIGHT = 1,
     ALPHA_TYPE_UNKNOWN = ALPHA_TYPE_PRE_MULTIPLIED // Fallback to pre-multiplied.
-} AlphaType;
+};
+typedef uint32_t AlphaType;
 
 /**
  * Floating-point RGBA color in unspecified color space and alpha type.
@@ -79,6 +80,7 @@ typedef struct VKTexelBuffer VKTexelBuffer;
 typedef struct VKBuffer VKBuffer;
 typedef struct VKImage VKImage;
 typedef struct VKSDOps VKSDOps;
+typedef struct VKSwapchain VKSwapchain;
 typedef struct VKWinSDOps VKWinSDOps;
 
 typedef const char* pchar;

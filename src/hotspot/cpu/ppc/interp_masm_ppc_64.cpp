@@ -1266,11 +1266,11 @@ void InterpreterMacroAssembler::verify_method_data_pointer() {
   lhz(R11_scratch1, in_bytes(DataLayout::bci_offset()), R28_mdx);
   ld(R12_scratch2, in_bytes(Method::const_offset()), R19_method);
   addi(R11_scratch1, R11_scratch1, in_bytes(ConstMethod::codes_offset()));
-  add(R11_scratch1, R12_scratch2, R12_scratch2);
+  add(R11_scratch1, R11_scratch1, R12_scratch2);
   cmpd(CR0, R11_scratch1, R14_bcp);
   beq(CR0, verify_continue);
 
-  call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::verify_mdp ), R19_method, R14_bcp, R28_mdx);
+  call_VM_leaf(CAST_FROM_FN_PTR(address, InterpreterRuntime::verify_mdp), R19_method, R14_bcp, R28_mdx);
 
   bind(verify_continue);
 #endif
@@ -2483,18 +2483,12 @@ void InterpreterMacroAssembler::notify_method_exit(bool is_native_method, TosSta
   // entry/exit events are sent for that thread to track stack
   // depth. If it is possible to enter interp_only_mode we add
   // the code to check if the event should be sent.
-  if (mode == NotifyJVMTI && JvmtiExport::can_post_interpreter_events()) {
-    Label jvmti_post_done;
-
-    lwz(R0, in_bytes(JavaThread::interp_only_mode_offset()), R16_thread);
-    cmpwi(CR0, R0, 0);
-    beq(CR0, jvmti_post_done);
+  if (mode == NotifyJVMTI && (JvmtiExport::can_post_interpreter_events() || JvmtiExport::can_post_frame_pop())) {
     if (!is_native_method) { push(state); } // Expose tos to GC.
     call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::post_method_exit), check_exceptions);
     if (!is_native_method) { pop(state); }
 
     align(32, 12);
-    bind(jvmti_post_done);
   }
 
   // Dtrace support not implemented.

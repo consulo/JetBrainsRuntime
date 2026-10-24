@@ -44,6 +44,12 @@ else
   fi
 fi
 
+if [ -n "${SYSROOT:-}" ]; then
+  WITH_SYSROOT="--with-sysroot=$SYSROOT"
+else
+  WITH_SYSROOT=""
+fi
+
 function do_configure {
   sh configure \
     $WITH_DEBUG_LEVEL \
@@ -62,6 +68,7 @@ function do_configure {
     $REPRODUCIBLE_BUILD_OPTS \
     $WITH_ZIPPED_NATIVE_DEBUG_SYMBOLS \
     $WITH_XCODE_PATH \
+    $WITH_SYSROOT \
     || do_exit $?
 }
 
@@ -101,7 +108,6 @@ function create_image_bundle {
 
   if [ "$bundle_type" == "jcef" ]; then
     cat $JCEF_PATH/jcef.version >> "$JRE_CONTENTS/Home/release"
-    ln -s "../../../Chromium Embedded Framework.framework" "$JRE_CONTENTS/Frameworks/cef_server.app/Contents/Frameworks/Chromium Embedded Framework.framework"
   fi
 
   cp -R "$JSDK"/../MacOS "$JRE_CONTENTS"

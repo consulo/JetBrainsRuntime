@@ -32,6 +32,7 @@ import sun.awt.PaintEventDispatcher;
 import sun.awt.SunToolkit;
 import sun.awt.event.IgnorePaintEvent;
 import sun.awt.image.SunVolatileImage;
+import sun.java2d.BufferedSurfaceDataExt;
 import sun.java2d.SunGraphics2D;
 import sun.java2d.SunGraphicsEnvironment;
 import sun.java2d.SurfaceData;
@@ -44,6 +45,8 @@ import sun.lwawt.LWMouseEventDispatcher;
 import sun.util.logging.PlatformLogger;
 import sun.util.logging.PlatformLogger.Level;
 
+import javax.swing.JComponent;
+import javax.swing.JWindow;
 import javax.swing.SwingUtilities;
 import java.awt.AWTEvent;
 import java.awt.AWTException;
@@ -52,7 +55,6 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.Cursor;
-import java.awt.Dialog;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.FontMetrics;
@@ -82,16 +84,21 @@ import java.awt.image.Kernel;
 import java.awt.image.VolatileImage;
 import java.awt.peer.ComponentPeer;
 import java.awt.peer.ContainerPeer;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.function.Supplier;
 
 public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
     protected static final PlatformLogger log = PlatformLogger.getLogger("sun.awt.wl.WLComponentPeer");
+    protected static final PlatformLogger outputLog = PlatformLogger.getLogger("sun.awt.wl.output.WLComponentPeer");
     private static final PlatformLogger focusLog = PlatformLogger.getLogger("sun.awt.wl.focus.WLComponentPeer");
     private static final PlatformLogger popupLog = PlatformLogger.getLogger("sun.awt.wl.popup.WLComponentPeer");
 
     public static final String POPUP_POSITION_UNCONSTRAINED_CLIENT_PROPERTY = "wlawt.popup_position_unconstrained";
+    public static final String WINDOW_SHADOW_PROPERTY = "Window.shadow";
 
     protected static final int MINIMUM_WIDTH = 1;
     protected static final int MINIMUM_HEIGHT = 1;
@@ -123,12 +130,43 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
 
     private final String kwinAppId; // non-null only when WLKwinHelper.isEnabled() is set
 
-    private static final boolean shadowEnabled = Boolean.parseBoolean(System.getProperty("sun.awt.wl.Shadow", "true"));
-    private static final boolean nativeModalityEnabled = Boolean.parseBoolean(
-            System.getProperty("sun.awt.wl.NativeModality", "false"));
+    private static final boolean shadowEnabled;
 
     static {
         initIDs();
+
+        String shadowProp = System.getProperty("sun.awt.wl.Shadow");
+        if (shadowProp != null) {
+            shadowEnabled = Boolean.parseBoolean(shadowProp);
+        } else {
+            boolean isWSL = System.getenv("WSL_INTEROP") != null || System.getenv("WSL_DISTRO_NAME") != null;
+            if (!isWSL) {
+                try {
+                    String osRelease = Files.readString(Path.of("/proc/sys/kernel/osrelease"));
+                    isWSL = osRelease.toLowerCase().contains("microsoft");
+                    if (!isWSL) {
+                        String procVersion = Files.readString(Path.of("/proc/version"));
+                        isWSL = procVersion.toLowerCase().contains("microsoft");
+                    }
+                } catch (IOException ignored) {}
+            }
+            shadowEnabled = !isWSL;
+        }
+    }
+
+    static boolean componentShadowEnabled(Component target) {
+        if (target instanceof JWindow jWindow) {
+            return componentShadowEnabled(jWindow.getRootPane());
+        }
+
+        if (target instanceof JComponent jTarget) {
+            Object value = jTarget.getClientProperty(WINDOW_SHADOW_PROPERTY);
+            if (value instanceof Boolean boolValue) {
+                return boolValue;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -154,7 +192,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
             log.fine("WLComponentPeer: target=" + target + " with size=" + wlSize);
         }
 
-        if (dropShadow && shadowEnabled) {
+        if (dropShadow && shadowEnabled && componentShadowEnabled(target)) {
             shadow = new ShadowImpl(targetIsWlPopup() ? ShadowImage.POPUP_SHADOW_SIZE : ShadowImage.WINDOW_SHADOW_SIZE);
         } else {
             shadow = new NilShadow();
@@ -397,7 +435,6 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
             boolean isWlPopup = targetIsWlPopup();
             int thisWidth = javaUnitsToSurfaceSize(getWidth());
             int thisHeight = javaUnitsToSurfaceSize(getHeight());
-            boolean isModal = targetIsModal();
 
             if (isWlPopup && (target.getParent() == null || !target.getParent().isShowing())) {
                 // Note: PopupFactory.getPopup(null, ...) cannot be supported because
@@ -417,6 +454,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
                 wlSurface = new WLMainSurface((WLWindowPeer) this);
                 long wlSurfacePtr = wlSurface.getWlSurfacePtr();
                 if (isWlPopup) {
+                    WLToolkit.getWLToolkit().syncBeforePopupMapIfEnabled();
                     Window popup = (Window) target;
                     Window toplevel = getToplevelFor(popup.getParent());
                     Point nativeLocation = nativeLocationForPopup(popup, toplevel);
@@ -425,7 +463,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
                 } else {
                     String appId = kwinAppId != null ? kwinAppId : WLToolkit.getApplicationID();
                     nativeCreateWindow(nativePtr, getParentNativePtr(target), wlSurfacePtr,
-                            isModal, isMaximized, isMinimized, title, appId);
+                            isMaximized, isMinimized, title, appId);
                     int xNative = javaUnitsToSurfaceUnits(target.getX());
                     int yNative = javaUnitsToSurfaceUnits(target.getY());
                     setLocationOfToplevel(xNative, yNative);
@@ -481,15 +519,6 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
         return window.getType() == Window.Type.POPUP;
     }
 
-    private boolean targetIsModal() {
-        if (nativeModalityEnabled) {
-            return target instanceof Dialog dialog
-                    && (dialog.getModalityType() == Dialog.ModalityType.APPLICATION_MODAL
-                    || dialog.getModalityType() == Dialog.ModalityType.TOOLKIT_MODAL);
-        }
-        return false;
-    }
-
     void updateSurfaceData() {
         performLocked(() -> {
             SurfaceData.convertTo(WLSurfaceDataExt.class, surfaceData).revalidate(
@@ -515,6 +544,22 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
 
     public boolean isResizable() {
         return true;
+    }
+
+    private void doRepositionPopup(int surfaceWidth, int surfaceHeight) {
+        assert SunToolkit.isAWTLockHeldByCurrentThread() : "This method must be invoked while holding the AWT lock";
+
+        Window popup = (Window) target;
+        Window toplevel = getToplevelFor(popup.getParent());
+        Point nativeLocation = nativeLocationForPopup(popup, toplevel);
+        boolean isUnconstrained = isPopupPositionUnconstrained();
+        nativeRepositionWLPopup(nativePtr, surfaceWidth, surfaceHeight, nativeLocation.x, nativeLocation.y, isUnconstrained);
+    }
+
+    private void doRepositionPopup() {
+        int surfaceWidth = wlSize.getSurfaceWidth();
+        int surfaceHeight = wlSize.getSurfaceHeight();
+        doRepositionPopup(surfaceWidth, surfaceHeight);
     }
 
     @Override
@@ -548,16 +593,11 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
             nativeSetMaximumSize(nativePtr, surfaceWidth, surfaceHeight);
         }
 
+        // Since popup's reposition request includes both its size and location, the request
+        // needs to be in sync with all the other sizes this method is responsible for updating.
         if (popupNeedsReposition()) {
             popupRepositioned();
-
-            // Since popup's reposition request includes both its size and location, the request
-            // needs to be in sync with all the other sizes this method is responsible for updating.
-            Window popup = (Window) target;
-            Window toplevel = getToplevelFor(popup.getParent());
-            Point nativeLocation = nativeLocationForPopup(popup, toplevel);
-            boolean isUnconstrained = isPopupPositionUnconstrained();
-            nativeRepositionWLPopup(nativePtr, surfaceWidth, surfaceHeight, nativeLocation.x, nativeLocation.y, isUnconstrained);
+            doRepositionPopup(surfaceWidth, surfaceHeight);
         }
     }
 
@@ -629,7 +669,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
             if (wlSurface != null) {
                 shadow.paint();
                 shadow.commitSurfaceData();
-                SurfaceData.convertTo(WLSurfaceDataExt.class, surfaceData).commit();
+                SurfaceData.convertTo(BufferedSurfaceDataExt.class, surfaceData).commit();
             }
         });
         ((WLToolkit) Toolkit.getDefaultToolkit()).flush();
@@ -659,9 +699,11 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
         }
     }
 
-    private void markPopupNeedsReposition() {
+    private boolean markPopupNeedsReposition() {
         synchronized (getStateLock()) {
+            boolean oldRepositionPopup = repositionPopup;
             repositionPopup = true;
+            return !oldRepositionPopup;
         }
     }
 
@@ -703,19 +745,27 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
             performLocked(() -> setLocationOfToplevel(newXNative, newYNative));
         }
 
+        boolean markedForReposition = false;
         if ((positionChanged || sizeChanged) && isPopup && visible) {
             // Need to update the location and size even if does not (yet) have a surface
             // as the initial configure event needs to have the latest data on the location/size.
-            markPopupNeedsReposition();
+            markedForReposition = markPopupNeedsReposition();
         }
 
         if (positionChanged) {
             WLToolkit.postEvent(new ComponentEvent(getTarget(), ComponentEvent.COMPONENT_MOVED));
         }
 
+        boolean sizeActuallyChanged = false;
         if (sizeChanged) {
             if (!isSizeBeingConfigured()) {
-                wlSize.deriveFromJavaSize(newSize.width, newSize.height);
+                synchronized (getStateLock()) {
+                    Dimension oldDims = wlSize.surfaceSize.getSize();
+                    wlSize.deriveFromJavaSize(newSize.width, newSize.height);
+                    if (!oldDims.equals(wlSize.surfaceSize)) {
+                        sizeActuallyChanged = true;
+                    }
+                }
                 shadow.resizeToParentWindow();
                 markResizePending();
             }
@@ -729,6 +779,15 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
             WLToolkit.postEvent(new ComponentEvent(getTarget(), ComponentEvent.COMPONENT_RESIZED));
 
             postPaintEvent(); // no need to repaint after being moved, only when resized
+        }
+
+        if (!sizeActuallyChanged && markedForReposition) {
+            performLocked(() -> {
+                if (popupNeedsReposition() && wlSurface != null && wlSurface.hasSurfaceData()) {
+                    popupRepositioned();
+                    doRepositionPopup();
+                }
+            });
         }
     }
 
@@ -791,7 +850,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
         return getFakeLocationOnScreen();
     }
 
-    private Point getFakeLocationOnScreen() {
+    Point getFakeLocationOnScreen() {
         // If we can't learn the real location from WLRobotPeer, we can at least
         // return a reasonable fake. This fake location places all windows in the top-left
         // corner of their respective screen and popups at the offset from
@@ -957,8 +1016,8 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
         performLocked(() -> nativeShowWindowMenu(serial, nativePtr, xNative, yNative));
     }
 
-    void setIcon(int size, int[] pixels) {
-        performLocked(() -> nativeSetIcon(nativePtr, size, pixels));
+    void setIcon(int[] dims, int[] pixels) {
+        performLocked(() -> nativeSetIcon(nativePtr, dims, pixels));
     }
 
     @Override
@@ -1185,22 +1244,21 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
     }
 
     private static long getSerialForActivation() {
-        long serial;
+        WLInputSerial serial = WLInputSerial.INVALID;
         if (WLToolkit.isKDE()) {
             serial = WLToolkit.getInputState().latestInputSerial();
         } else {
             serial = WLToolkit.getInputState().keyboardEnterSerial(); // a focus event
-            if (serial == 0) { // may have just left one surface and not yet entered another
-                serial = WLToolkit.getInputState().keySerial(); // an input event
-            }
-            if (serial == 0) {
-                // The pointer button serial seems to not work with Mutter but may work
-                // with other implementations, so let's keep it as an input event serial
-                // of the last resort.
-                serial = WLToolkit.getInputState().pointerButtonSerial();
-            }
+
+            // may have just left one surface and not yet entered another
+            serial = serial.freshOrElse(WLToolkit.getInputState().keySerial());
+
+            // The pointer button serial seems to not work with Mutter but may work
+            // with other implementations, so let's keep it as an input event serial
+            // of the last resort.
+            serial = serial.freshOrElse(WLToolkit.getInputState().pointerButtonSerial());
         }
-        return serial;
+        return serial.serial();
     }
 
     private static native void initIDs();
@@ -1208,7 +1266,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
     protected native long nativeCreateFrame();
 
     protected native void nativeCreateWindow(long ptr, long parentPtr, long wlSurfacePtr,
-                                                boolean isModal, boolean isMaximized, boolean isMinimized,
+                                                boolean isMaximized, boolean isMinimized,
                                                 String title, String appID);
 
     protected native void nativeCreatePopup(long ptr, long parentPtr, long wlSurfacePtr,
@@ -1238,7 +1296,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
     private native void nativeSetMinimumSize(long ptr, int width, int height);
     private native void nativeSetMaximumSize(long ptr, int width, int height);
     private native void nativeShowWindowMenu(long serial, long ptr, int x, int y);
-    private native void nativeSetIcon(long ptr, int size, int[] pixels);
+    private native void nativeSetIcon(long ptr, int[] dims, int[] pixels);
 
     static long getNativePtrFor(Component component) {
         final ComponentAccessor acc = AWTAccessor.getComponentAccessor();
@@ -1361,7 +1419,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
                             ? mweConversionInfo.yAxisMWEPreciseRotations
                             : mweConversionInfo.yAxisMWERoundRotations );
 
-                    if (xAxisUnitsToScroll > yAxisUnitsToScroll) {
+                    if (Math.abs(xAxisUnitsToScroll) > Math.abs(yAxisUnitsToScroll)) {
                         horizontalMWEScrollAmount     = mweConversionInfo.xAxisMWEScrollAmount;
                         horizontalMWEPreciseRotations = mweConversionInfo.xAxisMWEPreciseRotations;
                         horizontalMWERoundRotations   = mweConversionInfo.xAxisMWERoundRotations;
@@ -1815,41 +1873,99 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
         target.setVisible(false);
     }
 
-    void checkIfOnNewScreen() {
+    void notifyOutputChanged(WLGraphicsDevice device, WLGraphicsDevice.OutputChange change, int mask, int dx, int dy) {
         assert SunToolkit.isAWTLockHeldByCurrentThread() : "This method must be invoked while holding the AWT lock";
 
-        if (wlSurface == null) return;
-        final WLGraphicsDevice newDevice = wlSurface.getGraphicsDevice();
-        if (newDevice != null) { // could be null when screens are being reconfigured
-            final GraphicsConfiguration gc = newDevice.getDefaultConfiguration();
-            if (log.isLoggable(Level.FINE)) {
-                log.fine(this + " is on (possibly) new device " + newDevice);
-            }
-            var oldDevice = (WLGraphicsDevice) target.getGraphicsConfiguration().getDevice();
-            if (oldDevice != newDevice) {
-                oldDevice.removeWindow(this);
-                newDevice.addWindow(this);
-
-                if (targetIsWlPopup()) {
-                    Point loc = target.getLocation();
-                    Point oldScreenLocation = oldDevice.getBounds().getLocation();
-                    loc.translate(-oldScreenLocation.x, -oldScreenLocation.y);
-                    Point newScreenLocation = newDevice.getBounds().getLocation();
-                    loc.translate(newScreenLocation.x, newScreenLocation.y);
-                    resetTargetLocationTo(loc.x, loc.y);
-                }
-            }
-
-            if (!targetIsWlPopup()) {
-                // Toplevels are assumed to be always located at (0, 0) of their respective monitors.
-                resetTargetLocationTo(newDevice.getDefaultConfiguration());
-            }
-
-            performUnlocked(() -> {
-                var acc = AWTAccessor.getComponentAccessor();
-                acc.setGraphicsConfiguration(target, gc);
-            });
+        final GraphicsConfiguration gc = device.getDefaultConfiguration();
+        if (log.isLoggable(Level.FINE)) {
+            log.fine(this + " is on (possibly) new device " + device);
         }
+
+        if (outputLog.isLoggable(Level.FINE)) {
+            outputLog.fine("Target: " + target.getName() + (targetIsWlPopup()?" (WLPopup) (":" (") +
+                    target.getX() + ", " + target.getY() + ")");
+        }
+        switch (change) {
+            case CHANGED:
+                if (outputLog.isLoggable(Level.FINE)) {
+                    var bnd = device.getBounds();
+                    outputLog.fine("Changed device: " + device.getIDstring());
+                    outputLog.fine(String.format("  id=%4d (%6s) %dx%d; %10s",
+                            device.getID(), String.format("%s,%s",bnd.x, bnd.y),
+                            bnd.width, bnd.height, device.getIDstring()));
+                }
+                if ((mask & WLGraphicsDevice.WL_OUTPUT_CHANGED_ORIGIN) > 0) {
+                    if (outputLog.isLoggable(Level.FINE)) {
+                        outputLog.fine("  origin dx=" + dx + ", dy=" + dy);
+                    }
+
+                    if (targetIsWlPopup()) {
+                        Point loc = target.getLocation();
+                        loc.translate(dx, dy);
+                        if (outputLog.isLoggable(Level.FINE)) {
+                            outputLog.fine("Move target location: (" + target.getX() + ", " + target.getY() +
+                                    ")->(" + loc.x + ", " + loc.y + ")");
+                        }
+                        resetTargetLocationTo(loc.x, loc.y);
+                    }
+                }
+                break;
+
+            case ENTERED:
+                var oldDevice = (WLGraphicsDevice) target.getGraphicsConfiguration().getDevice();
+                if (outputLog.isLoggable(Level.FINE)) {
+                    var bnd = device.getBounds();
+                    outputLog.fine("Entered device: " + device.getIDstring());
+                    outputLog.fine(String.format("                id=%4d (%6s) %dx%d",
+                            device.getID(), String.format("%s,%s",bnd.x, bnd.y),
+                            bnd.width, bnd.height));
+                }
+                if (oldDevice != device) {
+                    if (outputLog.isLoggable(Level.FINE)) {
+                        var oldBnd = oldDevice.getBounds();
+                        outputLog.fine("          from: " + oldDevice.getIDstring());
+                        outputLog.fine(String.format("                id=%4d (%6s) %dx%d",
+                                oldDevice.getID(), String.format("%s,%s",oldBnd.x, oldBnd.y),
+                                oldBnd.width, oldBnd.height));
+                    }
+                    oldDevice.removeWindow(this);
+                    device.addWindow(this);
+                }
+                break;
+
+            case LEFT:
+                if (outputLog.isLoggable(Level.FINE)) {
+                    var bnd = device.getBounds();
+                    outputLog.fine("Left device: " + device.getIDstring());
+                    outputLog.fine(String.format("             id=%4d (%6s) %dx%d",
+                            device.getID(), String.format("%s,%s",bnd.x, bnd.y),
+                            bnd.width, bnd.height));
+                    outputLog.fine("\n");
+                }
+
+                device.removeWindow(this);
+                return;
+        }
+
+        if (!targetIsWlPopup()) {
+            // Toplevels are assumed to be always located at (0, 0) of their respective monitors.
+            if (outputLog.isLoggable(Level.FINE)) {
+                var loc = gc.getBounds().getLocation();
+                outputLog.fine("Set target location to: (" + loc.x + ", " + loc.y + ")");
+                outputLog.fine("");
+            }
+
+            resetTargetLocationTo(gc);
+        } else {
+            if (outputLog.isLoggable(Level.FINE)) {
+                outputLog.fine("");
+            }
+        }
+
+        performUnlocked(() -> {
+            var acc = AWTAccessor.getComponentAccessor();
+            acc.setGraphicsConfiguration(target, gc);
+        });
     }
 
     private Dimension constrainSize(int width, int height) {
@@ -2159,7 +2275,7 @@ public class WLComponentPeer implements ComponentPeer, WLSurfaceSizeListener {
         }
 
         public void commitSurfaceData() {
-            SurfaceData.convertTo(WLSurfaceDataExt.class, shadowSurfaceData).commit();
+            SurfaceData.convertTo(BufferedSurfaceDataExt.class, shadowSurfaceData).commit();
         }
 
         public void notifyConfigured(boolean active, boolean maximized, boolean fullscreen) {

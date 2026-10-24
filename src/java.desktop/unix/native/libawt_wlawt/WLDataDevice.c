@@ -42,6 +42,13 @@ enum DataTransferProtocol
 {
     DATA_TRANSFER_PROTOCOL_WAYLAND = sun_awt_wl_WLDataDevice_DATA_TRANSFER_PROTOCOL_WAYLAND,
     DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION = sun_awt_wl_WLDataDevice_DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION,
+    DATA_TRANSFER_PROTOCOL_DATA_CONTROL = sun_awt_wl_WLDataDevice_DATA_TRANSFER_PROTOCOL_DATA_CONTROL,
+};
+
+enum ClipboardSelection
+{
+    CLIPBOARD_SELECTION_DEFAULT = sun_awt_wl_WLDataDevice_CLIPBOARD_SELECTION_DEFAULT,
+    CLIPBOARD_SELECTION_PRIMARY = sun_awt_wl_WLDataDevice_CLIPBOARD_SELECTION_PRIMARY,
 };
 
 struct DataSource;
@@ -58,6 +65,7 @@ struct DataDevice
     struct wl_event_queue *dataSourceQueue;
     struct wl_data_device *wlDataDevice;
     struct zwp_primary_selection_device_v1 *zwpPrimarySelectionDevice;
+    struct ext_data_control_device_v1 *extDataControlDevice;
 
     pthread_mutex_t sourceDelMutex;
     struct DataSource* sourceDelQueue;
@@ -83,6 +91,7 @@ struct DataSource
 
         struct wl_data_source *wlDataSource;
         struct zwp_primary_selection_source_v1 *zwpPrimarySelectionSource;
+        struct ext_data_control_source_v1 *extDataControlSource;
     };
 
     struct wl_surface* dragIcon;
@@ -108,6 +117,7 @@ struct DataOffer
 
         struct wl_data_offer *wlDataOffer;
         struct zwp_primary_selection_offer_v1 *zwpPrimarySelectionOffer;
+        struct ext_data_control_offer_v1 *extDataControlOffer;
     };
 
     struct DataOffer* nextDel;
@@ -148,7 +158,7 @@ initJavaRefs(JNIEnv *env)
     GET_METHOD_RETURN(wlDataDeviceHandleDnDMotionMID, wlDataDeviceClass, "handleDnDMotion", "(JDD)V", false);
     GET_METHOD_RETURN(wlDataDeviceHandleDnDDropMID, wlDataDeviceClass, "handleDnDDrop", "()V", false);
     GET_METHOD_RETURN(wlDataDeviceHandleSelectionMID, wlDataDeviceClass, "handleSelection",
-                      "(Lsun/awt/wl/WLDataOffer;I)V", false);
+                      "(Lsun/awt/wl/WLDataOffer;II)V", false);
     GET_METHOD_RETURN(wlDataSourceHandleTargetAcceptsMimeMID, wlDataSourceClass, "handleTargetAcceptsMime",
                       "(Ljava/lang/String;)V", false);
     GET_METHOD_RETURN(wlDataSourceHandleSendMID, wlDataSourceClass, "handleSend", "(Ljava/lang/String;I)V", false);
@@ -210,6 +220,21 @@ static const struct zwp_primary_selection_source_v1_listener zwp_primary_selecti
 };
 
 static void
+ext_data_control_source_handle_send(void *user,
+                                    struct ext_data_control_source_v1 *source,
+                                    const char *mime,
+                                    int32_t fd);
+
+static void
+ext_data_control_source_handle_cancelled(void *user,
+                                         struct ext_data_control_source_v1 *source);
+
+static const struct ext_data_control_source_v1_listener ext_data_control_source_listener = {
+        .send = ext_data_control_source_handle_send,
+        .cancelled = ext_data_control_source_handle_cancelled,
+};
+
+static void
 wl_data_offer_handle_offer(void *user, struct wl_data_offer *offer, const char *mime);
 
 static void
@@ -218,7 +243,7 @@ wl_data_offer_handle_source_actions(void *user, struct wl_data_offer *offer, uin
 static void
 wl_data_offer_handle_action(void *user, struct wl_data_offer *offer, uint32_t action);
 
-static const struct wl_data_offer_listener wlDataOfferListener = {
+static const struct wl_data_offer_listener wl_data_offer_listener = {
         .offer = wl_data_offer_handle_offer,
         .source_actions = wl_data_offer_handle_source_actions,
         .action = wl_data_offer_handle_action,
@@ -227,8 +252,17 @@ static const struct wl_data_offer_listener wlDataOfferListener = {
 static void
 zwp_primary_selection_offer_handle_offer(void *user, struct zwp_primary_selection_offer_v1 *offer, const char *mime);
 
-static const struct zwp_primary_selection_offer_v1_listener zwpPrimarySelectionOfferListener = {
+static const struct zwp_primary_selection_offer_v1_listener zwp_primary_selection_offer_listener = {
         .offer = zwp_primary_selection_offer_handle_offer,
+};
+
+static void
+ext_data_control_offer_handle_offer(void* user,
+                                    struct ext_data_control_offer_v1 *offer,
+                                    const char *mime);
+
+static const struct ext_data_control_offer_v1_listener ext_data_control_offer_listener = {
+        .offer = ext_data_control_offer_handle_offer,
 };
 
 static void
@@ -256,7 +290,7 @@ wl_data_device_handle_drop(void *user, struct wl_data_device *wl_data_device);
 static void
 wl_data_device_handle_selection(void *user, struct wl_data_device *wl_data_device, struct wl_data_offer *id);
 
-static const struct wl_data_device_listener wlDataDeviceListener = {
+static const struct wl_data_device_listener wl_data_device_listener = {
         .data_offer = wl_data_device_handle_data_offer,
         .enter = wl_data_device_handle_enter,
         .leave = wl_data_device_handle_leave,
@@ -275,9 +309,35 @@ zwp_primary_selection_device_handle_selection(void *user,
                                               struct zwp_primary_selection_device_v1 *device,
                                               struct zwp_primary_selection_offer_v1 *id);
 
-static const struct zwp_primary_selection_device_v1_listener zwpPrimarySelectionDeviceListener = {
+static const struct zwp_primary_selection_device_v1_listener zwp_primary_selection_device_listener = {
         .data_offer = zwp_primary_selection_device_handle_data_offer,
         .selection = zwp_primary_selection_device_handle_selection,
+};
+
+static void
+ext_data_control_device_handle_data_offer(void *user,
+                                          struct ext_data_control_device_v1 *device,
+                                          struct ext_data_control_offer_v1 *offer);
+
+static void
+ext_data_control_device_handle_selection(void *user,
+                                         struct ext_data_control_device_v1 *device,
+                                         struct ext_data_control_offer_v1 *offer);
+
+static void
+ext_data_control_device_handle_finished(void *user,
+                                        struct ext_data_control_device_v1 *device);
+
+static void
+ext_data_control_device_handle_primary_selection(void *user,
+                                                 struct ext_data_control_device_v1 *device,
+                                                 struct ext_data_control_offer_v1 *offer);
+
+static const struct ext_data_control_device_v1_listener ext_data_control_device_listener = {
+    .data_offer = ext_data_control_device_handle_data_offer,
+    .selection = ext_data_control_device_handle_selection,
+    .finished = ext_data_control_device_handle_finished,
+    .primary_selection = ext_data_control_device_handle_primary_selection,
 };
 
 static void
@@ -285,6 +345,12 @@ DataSource_offer(const struct DataSource *source, const char *mime);
 
 static void
 DataSource_setDnDActions(const struct DataSource *source, uint32_t actions);
+
+static void
+DataSource_handleSend(struct DataSource *source, const char *mime, int fd);
+
+static void
+DataSource_handleCancelled(struct DataSource *source);
 
 static struct DataOffer *
 DataOffer_create(struct DataDevice *dataDevice, enum DataTransferProtocol protocol, void *waylandObject);
@@ -306,7 +372,8 @@ DataOffer_callOfferHandler(struct DataOffer *offer, const char *mime);
 
 static void
 DataOffer_callSelectionHandler(struct DataDevice *dataDevice, struct DataOffer *offer,
-                               enum DataTransferProtocol protocol);
+                               enum DataTransferProtocol protocol,
+                               enum ClipboardSelection selection);
 
 // Implementation
 
@@ -317,6 +384,8 @@ DataSource_offer(const struct DataSource *source, const char *mime)
         wl_data_source_offer(source->wlDataSource, mime);
     } else if (source->protocol == DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION) {
         zwp_primary_selection_source_v1_offer(source->zwpPrimarySelectionSource, mime);
+    } else if (source->protocol == DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+        ext_data_control_source_v1_offer(source->extDataControlSource, mime);
     }
 }
 
@@ -326,6 +395,44 @@ DataSource_setDnDActions(const struct DataSource *source, uint32_t actions)
     if (source->protocol == DATA_TRANSFER_PROTOCOL_WAYLAND) {
         wl_data_source_set_actions(source->wlDataSource, actions);
     }
+}
+
+static void
+DataSource_handleSend(struct DataSource *source, const char *mime, int fd)
+{
+    assert(source != NULL);
+
+    if (source->javaObject == NULL) {
+        return;
+    }
+
+    JNIEnv *env = getEnv();
+    assert(env != NULL);
+
+    jstring mimeJavaString = (*env)->NewStringUTF(env, mime);
+    if (wlListenerCheckException(env) || mimeJavaString == NULL) {
+        return;
+    }
+
+    (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleSendMID, mimeJavaString, fd);
+    wlListenerCheckException(env);
+    (*env)->DeleteLocalRef(env, mimeJavaString);
+}
+
+static void
+DataSource_handleCancelled(struct DataSource *source)
+{
+    assert(source != NULL);
+
+    if (source->javaObject == NULL) {
+        return;
+    }
+
+    JNIEnv *env = getEnv();
+    assert(env != NULL);
+
+    (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleCancelledMID);
+    wlListenerCheckException(env);
 }
 
 static struct DataOffer *
@@ -344,10 +451,7 @@ DataOffer_create(struct DataDevice *dataDevice, enum DataTransferProtocol protoc
 
     jobject obj = (*env)->NewObject(env, wlDataOfferClass, wlDataOfferConstructorMID, ptr_to_jlong(offer));
 
-    // Can't throw Java exceptions during Wayland event dispatch
-    EXCEPTION_CLEAR(env);
-
-    if (obj == NULL) {
+    if (wlListenerCheckException(env) || obj == NULL) {
         free(offer);
         return NULL;
     }
@@ -355,8 +459,7 @@ DataOffer_create(struct DataDevice *dataDevice, enum DataTransferProtocol protoc
     // Cleared in DataOffer.destroy()
     jobject globalRef = (*env)->NewGlobalRef(env, obj);
 
-    EXCEPTION_CLEAR(env);
-    if (globalRef == NULL) {
+    if (wlListenerCheckException(env) || globalRef == NULL) {
         (*env)->DeleteLocalRef(env, obj);
         free(offer);
         return NULL;
@@ -368,13 +471,19 @@ DataOffer_create(struct DataDevice *dataDevice, enum DataTransferProtocol protoc
     if (protocol == DATA_TRANSFER_PROTOCOL_WAYLAND) {
         struct wl_data_offer *wlDataOffer = waylandObject;
         offer->wlDataOffer = wlDataOffer;
-        wl_data_offer_add_listener(wlDataOffer, &wlDataOfferListener, offer);
+        wl_data_offer_add_listener(wlDataOffer, &wl_data_offer_listener, offer);
     }
 
     if (protocol == DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION) {
         struct zwp_primary_selection_offer_v1 *zwpPrimarySelectionOffer = waylandObject;
         offer->zwpPrimarySelectionOffer = zwpPrimarySelectionOffer;
-        zwp_primary_selection_offer_v1_add_listener(zwpPrimarySelectionOffer, &zwpPrimarySelectionOfferListener, offer);
+        zwp_primary_selection_offer_v1_add_listener(zwpPrimarySelectionOffer, &zwp_primary_selection_offer_listener, offer);
+    }
+
+    if (protocol == DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+        struct ext_data_control_offer_v1 *extDataControlOffer = waylandObject;
+        offer->extDataControlOffer = extDataControlOffer;
+        ext_data_control_offer_v1_add_listener(extDataControlOffer, &ext_data_control_offer_listener, offer);
     }
 
     return offer;
@@ -387,6 +496,8 @@ DataOffer_receive(struct DataOffer *offer, const char *mime, int fd)
         wl_data_offer_receive(offer->wlDataOffer, mime, fd);
     } else if (offer->protocol == DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION) {
         zwp_primary_selection_offer_v1_receive(offer->zwpPrimarySelectionOffer, mime, fd);
+    } else if (offer->protocol == DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+        ext_data_control_offer_v1_receive(offer->extDataControlOffer, mime, fd);
     }
 }
 
@@ -427,17 +538,19 @@ DataOffer_callOfferHandler(struct DataOffer *offer, const char *mime)
     assert(env != NULL);
 
     jstring mimeJavaString = (*env)->NewStringUTF(env, mime);
-    EXCEPTION_CLEAR(env);
-    if (mimeJavaString != NULL) {
-        (*env)->CallVoidMethod(env, offer->javaObject, wlDataOfferHandleOfferMimeMID, mimeJavaString);
-        EXCEPTION_CLEAR(env);
-        (*env)->DeleteLocalRef(env, mimeJavaString);
+    if (wlListenerCheckException(env) || mimeJavaString == NULL) {
+        return;
     }
+
+    (*env)->CallVoidMethod(env, offer->javaObject, wlDataOfferHandleOfferMimeMID, mimeJavaString);
+    wlListenerCheckException(env);
+    (*env)->DeleteLocalRef(env, mimeJavaString);
 }
 
 static void
 DataOffer_callSelectionHandler(struct DataDevice *dataDevice, struct DataOffer *offer,
-                               enum DataTransferProtocol protocol)
+                               enum DataTransferProtocol protocol,
+                               enum ClipboardSelection selection)
 {
     assert(dataDevice != NULL);
     // offer can be NULL, this means that the selection was cleared
@@ -449,8 +562,8 @@ DataOffer_callSelectionHandler(struct DataDevice *dataDevice, struct DataOffer *
     JNIEnv *env = getEnv();
     assert(env != NULL);
 
-    (*env)->CallVoidMethod(env, dataDevice->javaObject, wlDataDeviceHandleSelectionMID, offerObject, protocol);
-    EXCEPTION_CLEAR(env);
+    (*env)->CallVoidMethod(env, dataDevice->javaObject, wlDataDeviceHandleSelectionMID, offerObject, protocol, selection);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -464,6 +577,8 @@ DataDevice_drainSourceDeletionQueue(struct DataDevice *dataDevice, JNIEnv* env) 
             wl_data_source_destroy(source->wlDataSource);
         } else if (source->protocol == DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION) {
             zwp_primary_selection_source_v1_destroy(source->zwpPrimarySelectionSource);
+        } else if (source->protocol == DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+            ext_data_control_source_v1_destroy(source->extDataControlSource);
         }
 
         if (source->dragIconBuffer) {
@@ -499,6 +614,8 @@ DataDevice_drainOfferDeletionQueue(struct DataDevice *dataDevice, JNIEnv* env) {
             wl_data_offer_destroy(offer->wlDataOffer);
         } else if (offer->protocol == DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION) {
             zwp_primary_selection_offer_v1_destroy(offer->zwpPrimarySelectionOffer);
+        } else if (offer->protocol == DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+            ext_data_control_offer_v1_destroy(offer->extDataControlOffer);
         }
 
         if (offer->javaObject != NULL) {
@@ -531,51 +648,27 @@ wl_data_source_handle_target(void *user, struct wl_data_source *wl_data_source, 
     assert(env != NULL);
 
     jstring mimeJavaString = (*env)->NewStringUTF(env, mime);
-    EXCEPTION_CLEAR(env);
-    if (mimeJavaString != NULL) {
-        (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleTargetAcceptsMimeMID, mimeJavaString);
-        EXCEPTION_CLEAR(env);
-        (*env)->DeleteLocalRef(env, mimeJavaString);
+    if (wlListenerCheckException(env) || mimeJavaString == NULL) {
+        return;
     }
+
+    (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleTargetAcceptsMimeMID, mimeJavaString);
+    wlListenerCheckException(env);
+    (*env)->DeleteLocalRef(env, mimeJavaString);
 }
 
 static void
 wl_data_source_handle_send(void *user, struct wl_data_source *wl_data_source, const char *mime, int32_t fd)
 {
     struct DataSource *source = user;
-    assert(source != NULL);
-
-    if (source->javaObject == NULL) {
-        return;
-    }
-
-    JNIEnv *env = getEnv();
-    assert(env != NULL);
-
-    jstring mimeJavaString = (*env)->NewStringUTF(env, mime);
-    EXCEPTION_CLEAR(env);
-    if (mimeJavaString != NULL) {
-        (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleSendMID, mimeJavaString, fd);
-        EXCEPTION_CLEAR(env);
-        (*env)->DeleteLocalRef(env, mimeJavaString);
-    }
+    DataSource_handleSend(source, mime, fd);
 }
 
 static void
 wl_data_source_handle_cancelled(void *user, struct wl_data_source *wl_data_source)
 {
     struct DataSource *source = user;
-    assert(source != NULL);
-
-    if (source->javaObject == NULL) {
-        return;
-    }
-
-    JNIEnv *env = getEnv();
-    assert(env != NULL);
-
-    (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleCancelledMID);
-    EXCEPTION_CLEAR(env);
+    DataSource_handleCancelled(source);
 }
 
 static void
@@ -592,7 +685,7 @@ wl_data_source_handle_dnd_drop_performed(void *user, struct wl_data_source *wl_d
     assert(env != NULL);
 
     (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleDnDDropPerformedMID);
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -609,7 +702,7 @@ wl_data_source_handle_dnd_finished(void *user, struct wl_data_source *wl_data_so
     assert(env != NULL);
 
     (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleDnDFinishedMID);
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -626,7 +719,7 @@ wl_data_source_handle_action(void *user, struct wl_data_source *wl_data_source, 
     assert(env != NULL);
 
     (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleDnDActionMID, action);
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -635,22 +728,7 @@ zwp_primary_selection_source_handle_send(
         int32_t fd)
 {
     struct DataSource *source = user;
-    assert(source != NULL);
-
-    if (source->javaObject == NULL) {
-        return;
-    }
-
-    JNIEnv *env = getEnv();
-    assert(env != NULL);
-
-    jstring mimeJavaString = (*env)->NewStringUTF(env, mime);
-    EXCEPTION_CLEAR(env);
-    if (mimeJavaString != NULL) {
-        (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleSendMID, mimeJavaString, fd);
-        EXCEPTION_CLEAR(env);
-        (*env)->DeleteLocalRef(env, mimeJavaString);
-    }
+    DataSource_handleSend(source, mime, fd);
 }
 
 static void
@@ -658,17 +736,25 @@ zwp_primary_selection_source_handle_cancelled(void *user,
                                               struct zwp_primary_selection_source_v1 *zwp_primary_selection_source_v1)
 {
     struct DataSource *source = user;
-    assert(source != NULL);
+    DataSource_handleCancelled(source);
+}
 
-    if (source->javaObject == NULL) {
-        return;
-    }
+static void
+ext_data_control_source_handle_send(void *user,
+                                    struct ext_data_control_source_v1 *ext_data_control_source,
+                                    const char *mime,
+                                    int32_t fd)
+{
+    struct DataSource *source = user;
+    DataSource_handleSend(source, mime, fd);
+}
 
-    JNIEnv *env = getEnv();
-    assert(env != NULL);
-
-    (*env)->CallVoidMethod(env, source->javaObject, wlDataSourceHandleCancelledMID);
-    EXCEPTION_CLEAR(env);
+static void
+ext_data_control_source_handle_cancelled(void *user,
+                                         struct ext_data_control_source_v1 *ext_data_control_source)
+{
+    struct DataSource *source = user;
+    DataSource_handleCancelled(source);
 }
 
 static void
@@ -691,7 +777,7 @@ wl_data_offer_handle_source_actions(void *user, struct wl_data_offer *wl_data_of
     assert(env != NULL);
 
     (*env)->CallVoidMethod(env, offer->javaObject, wlDataOfferHandleSourceActionsMID, (jint) source_actions);
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -708,13 +794,21 @@ wl_data_offer_handle_action(void *user, struct wl_data_offer *wl_data_offer, uin
     assert(env != NULL);
 
     (*env)->CallVoidMethod(env, offer->javaObject, wlDataOfferHandleActionMID, (jint) action);
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
 zwp_primary_selection_offer_handle_offer(void *user,
                                          struct zwp_primary_selection_offer_v1 *zwp_primary_selection_offer_v1,
                                          const char *mime)
+{
+    DataOffer_callOfferHandler((struct DataOffer *) user, mime);
+}
+
+static void
+ext_data_control_offer_handle_offer(void* user,
+                                    struct ext_data_control_offer_v1 *offer,
+                                    const char *mime)
 {
     DataOffer_callOfferHandler((struct DataOffer *) user, mime);
 }
@@ -746,6 +840,11 @@ wl_data_device_handle_enter(void *user,
                             wl_fixed_t y,
                             struct wl_data_offer *id)
 {
+    if (id == NULL) {
+        // The offer can be NULL as per protocol spec, but there's nothing sensible to do in this case
+        return;
+    }
+
     struct DataDevice *dataDevice = user;
     assert(dataDevice != NULL);
     struct DataOffer *offer = (struct DataOffer *) wl_data_offer_get_user_data(id);
@@ -761,7 +860,7 @@ wl_data_device_handle_enter(void *user,
     (*env)->CallVoidMethod(env, dataDevice->javaObject, wlDataDeviceHandleDnDEnterMID, offer->javaObject,
                            (jlong) serial,
                            ptr_to_jlong(surface), wl_fixed_to_double(x), wl_fixed_to_double(y));
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -773,7 +872,7 @@ wl_data_device_handle_leave(void *user, struct wl_data_device *wl_data_device)
     JNIEnv *env = getEnv();
     assert(env != NULL);
     (*env)->CallVoidMethod(env, dataDevice->javaObject, wlDataDeviceHandleDnDLeaveMID);
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -788,7 +887,7 @@ wl_data_device_handle_motion(
     (*env)->CallVoidMethod(env, dataDevice->javaObject, wlDataDeviceHandleDnDMotionMID, (jlong) time,
                            wl_fixed_to_double(x),
                            wl_fixed_to_double(y));
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -800,7 +899,7 @@ wl_data_device_handle_drop(void *user, struct wl_data_device *wl_data_device)
     JNIEnv *env = getEnv();
     assert(env != NULL);
     (*env)->CallVoidMethod(env, dataDevice->javaObject, wlDataDeviceHandleDnDDropMID);
-    EXCEPTION_CLEAR(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -816,7 +915,7 @@ wl_data_device_handle_selection(void *user, struct wl_data_device *wl_data_devic
         assert(offer != NULL);
     }
 
-    DataOffer_callSelectionHandler(dataDevice, offer, DATA_TRANSFER_PROTOCOL_WAYLAND);
+    DataOffer_callSelectionHandler(dataDevice, offer, DATA_TRANSFER_PROTOCOL_WAYLAND, CLIPBOARD_SELECTION_DEFAULT);
 }
 
 static void
@@ -853,7 +952,78 @@ zwp_primary_selection_device_handle_selection(void *user,
         assert(offer != NULL);
     }
 
-    DataOffer_callSelectionHandler(dataDevice, offer, DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION);
+    DataOffer_callSelectionHandler(dataDevice, offer, DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION, CLIPBOARD_SELECTION_PRIMARY);
+}
+
+static void
+ext_data_control_device_handle_data_offer(void *user,
+                                          struct ext_data_control_device_v1 *ext_data_control_device_v1,
+                                          struct ext_data_control_offer_v1 *id)
+{
+    struct DataDevice *dataDevice = user;
+    struct DataOffer *offer = DataOffer_create(dataDevice, DATA_TRANSFER_PROTOCOL_DATA_CONTROL, id);
+    if (offer == NULL) {
+        // This can only happen in OOM scenarios.
+        // We can't throw a Java exception here.
+        // Destroy the offer, since we won't be able to do anything useful with it.
+        ext_data_control_offer_v1_destroy(id);
+        return;
+    }
+    // no memory leak here: allocated DataOffer object will be
+    // associated with the ext_data_control_offer_v1
+}
+
+static void
+ext_data_control_device_handle_selection(void *user,
+                                         struct ext_data_control_device_v1 *ext_data_control_device_v1,
+                                         struct ext_data_control_offer_v1 *id)
+{
+    struct DataDevice *dataDevice = user;
+    assert(dataDevice != NULL);
+
+    struct DataOffer *offer = NULL;
+
+    // id can be NULL, this means that the selection was cleared
+    if (id != NULL) {
+        offer = (struct DataOffer *) ext_data_control_offer_v1_get_user_data(id);
+        assert(offer != NULL);
+    }
+
+    DataOffer_callSelectionHandler(dataDevice, offer, DATA_TRANSFER_PROTOCOL_DATA_CONTROL, CLIPBOARD_SELECTION_DEFAULT);
+}
+
+static void
+ext_data_control_device_handle_finished(void *user,
+                                        struct ext_data_control_device_v1 *ext_data_control_device_v1)
+{
+    struct DataDevice *dataDevice = user;
+    assert(dataDevice != NULL);
+
+    // clear selections
+    DataOffer_callSelectionHandler(dataDevice, NULL, DATA_TRANSFER_PROTOCOL_DATA_CONTROL, CLIPBOARD_SELECTION_DEFAULT);
+    DataOffer_callSelectionHandler(dataDevice, NULL, DATA_TRANSFER_PROTOCOL_DATA_CONTROL, CLIPBOARD_SELECTION_PRIMARY);
+
+    ext_data_control_device_v1_destroy(ext_data_control_device_v1);
+    dataDevice->extDataControlDevice = NULL;
+}
+
+static void
+ext_data_control_device_handle_primary_selection(void *user,
+                                                 struct ext_data_control_device_v1 *ext_data_control_device_v1,
+                                                 struct ext_data_control_offer_v1 *id)
+{
+    struct DataDevice *dataDevice = user;
+    assert(dataDevice != NULL);
+
+    struct DataOffer *offer = NULL;
+
+    // id can be NULL, this means that the selection was cleared
+    if (id != NULL) {
+        offer = (struct DataOffer *) ext_data_control_offer_v1_get_user_data(id);
+        assert(offer != NULL);
+    }
+
+    DataOffer_callSelectionHandler(dataDevice, offer, DATA_TRANSFER_PROTOCOL_DATA_CONTROL, CLIPBOARD_SELECTION_PRIMARY);
 }
 
 // JNI functions
@@ -905,18 +1075,29 @@ Java_sun_awt_wl_WLDataDevice_initNative(JNIEnv *env, jobject obj, jlong wlSeatPt
         }
     }
 
+    dataDevice->extDataControlDevice = NULL;
+    if (ext_data_control_manager != NULL) {
+        dataDevice->extDataControlDevice = ext_data_control_manager_v1_get_data_device(ext_data_control_manager, seat);
+    }
+
     dataDevice->dataSourceQueue = wl_display_create_queue(wl_display);
     if (dataDevice->dataSourceQueue == NULL) {
         JNU_ThrowInternalError(env, "Couldn't create an event queue for the data device");
         goto error_cleanup;
     }
 
-    wl_data_device_add_listener(dataDevice->wlDataDevice, &wlDataDeviceListener, dataDevice);
+    wl_data_device_add_listener(dataDevice->wlDataDevice, &wl_data_device_listener, dataDevice);
 
     if (dataDevice->zwpPrimarySelectionDevice != NULL) {
         zwp_primary_selection_device_v1_add_listener(dataDevice->zwpPrimarySelectionDevice,
-                                                     &zwpPrimarySelectionDeviceListener,
+                                                     &zwp_primary_selection_device_listener,
                                                      dataDevice);
+    }
+
+    if (dataDevice->extDataControlDevice != NULL) {
+        ext_data_control_device_v1_add_listener(dataDevice->extDataControlDevice,
+                                                &ext_data_control_device_listener,
+                                                dataDevice);
     }
 
     return ptr_to_jlong(dataDevice);
@@ -961,6 +1142,10 @@ Java_sun_awt_wl_WLDataDevice_isProtocolSupportedImpl(JNIEnv *env, jclass clazz, 
         return dataDevice->zwpPrimarySelectionDevice != NULL;
     }
 
+    if (protocol == DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+        return dataDevice->extDataControlDevice != NULL;
+    }
+
     return false;
 }
 
@@ -978,8 +1163,9 @@ Java_sun_awt_wl_WLDataDevice_dispatchDataSourceQueueImpl(JNIEnv *env, jclass cla
 JNIEXPORT void JNICALL
 Java_sun_awt_wl_WLDataDevice_setSelectionImpl(JNIEnv *env,
                                               jclass clazz,
-                                              jint protocol,
                                               jlong dataDeviceNativePtr,
+                                              jint protocol,
+                                              jint selectionType,
                                               jlong dataSourceNativePtr,
                                               jlong serial)
 {
@@ -988,9 +1174,15 @@ Java_sun_awt_wl_WLDataDevice_setSelectionImpl(JNIEnv *env,
 
     struct DataSource *source = jlong_to_ptr(dataSourceNativePtr);
 
-    if (protocol == DATA_TRANSFER_PROTOCOL_WAYLAND) {
+    if (protocol == DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+        if (selectionType == CLIPBOARD_SELECTION_DEFAULT) {
+            ext_data_control_device_v1_set_selection(dataDevice->extDataControlDevice, (source == NULL) ? NULL : source->extDataControlSource);
+        } else if (selectionType == CLIPBOARD_SELECTION_PRIMARY) {
+            ext_data_control_device_v1_set_primary_selection(dataDevice->extDataControlDevice, (source == NULL) ? NULL : source->extDataControlSource);
+        }
+    } else if (protocol == DATA_TRANSFER_PROTOCOL_WAYLAND && selectionType == CLIPBOARD_SELECTION_DEFAULT) {
         wl_data_device_set_selection(dataDevice->wlDataDevice, (source == NULL) ? NULL : source->wlDataSource, serial);
-    } else if (protocol == DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION) {
+    } else if (protocol == DATA_TRANSFER_PROTOCOL_PRIMARY_SELECTION  && selectionType == CLIPBOARD_SELECTION_PRIMARY) {
         zwp_primary_selection_device_v1_set_selection(
                 dataDevice->zwpPrimarySelectionDevice, (source == NULL) ? NULL : source->zwpPrimarySelectionSource,
                 serial);
@@ -1120,6 +1312,26 @@ Java_sun_awt_wl_WLDataSource_initNative(JNIEnv *env, jobject javaObject, jlong d
 
         zwp_primary_selection_source_v1_add_listener(zwpPrimarySelectionSource,
                                                      &zwp_primary_selection_source_v1_listener, source);
+    }
+
+    if (protocol == DATA_TRANSFER_PROTOCOL_DATA_CONTROL) {
+        struct ext_data_control_manager_v1 *dmWrapper = wl_proxy_create_wrapper(ext_data_control_manager);
+        struct ext_data_control_source_v1 *extDataControlSource = NULL;
+
+        if (dmWrapper != NULL) {
+            wl_proxy_set_queue((struct wl_proxy *) dmWrapper, dataDevice->dataSourceQueue);
+            extDataControlSource = ext_data_control_manager_v1_create_data_source(dmWrapper);
+            wl_proxy_wrapper_destroy(dmWrapper);
+        }
+
+        if (extDataControlSource == NULL) {
+            free(source);
+            JNU_ThrowByName(env, "java/awt/AWTError", "Wayland error creating ext_data_control_source_v1 proxy");
+            return 0;
+        }
+
+        source->extDataControlSource = extDataControlSource;
+        ext_data_control_source_v1_add_listener(extDataControlSource, &ext_data_control_source_listener, source);
     }
 
     return ptr_to_jlong(source);

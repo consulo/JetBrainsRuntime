@@ -55,10 +55,6 @@
 #include "memory_utils.h"
 #include "java_awt_event_KeyEvent.h"
 
-#ifdef HAVE_GTK_SHELL1
-#include <gtk-shell.h>
-#endif
-
 #define CHECK_WL_INTERFACE(var, name) if (!(var)) { JNU_ThrowByName(env, "java/awt/AWTError", "Can't bind to the " name " interface"); }
 
 extern JavaVM *jvm;
@@ -71,9 +67,6 @@ struct xdg_wm_base *xdg_wm_base = NULL;
 struct wp_viewporter *wp_viewporter = NULL;
 struct xdg_activation_v1 *xdg_activation_v1 = NULL; // optional, check for NULL before use
 struct wl_seat     *wl_seat = NULL;
-#ifdef HAVE_GTK_SHELL1
-struct gtk_shell1* gtk_shell1 = NULL;
-#endif
 struct wl_keyboard *wl_keyboard; // optional, check for NULL before use
 struct wl_pointer  *wl_pointer; // optional, check for NULL before use
 struct zwp_relative_pointer_manager_v1* relative_pointer_manager; // optional, check for NULL before use
@@ -88,6 +81,9 @@ struct zxdg_output_manager_v1 *zxdg_output_manager_v1 = NULL; // optional, check
 
 struct zwp_text_input_manager_v3 *zwp_text_input_manager = NULL; // optional, check for NULL before use
 struct xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager; // optional, check for NULL before use
+struct ext_data_control_manager_v1 *ext_data_control_manager = NULL; // optional, check for NULL before use
+
+struct wp_cursor_shape_manager_v1 *wp_cursor_shape_manager; // optional, check for NULL before use
 
 static uint32_t num_of_outstanding_sync = 0;
 static bool waiting_for_xdg_toplevel_icon_manager_done = false;
@@ -126,6 +122,9 @@ static jfieldID yAxis_hasSteps120ValueFID;
 static jfieldID yAxis_vectorValueFID;
 static jfieldID yAxis_steps120ValueFID;
 
+static jmethodID handleWaylandLogMID;
+static jmethodID handleProtocolErrorMID;
+static jmethodID handleExceptionFromEventHandlerMID;
 static jmethodID dispatchKeyboardKeyEventMID;
 static jmethodID dispatchKeyboardModifiersEventMID;
 static jmethodID dispatchKeyboardEnterEventMID;
@@ -134,6 +133,9 @@ static jmethodID dispatchRelativePointerEventMID;
 static jmethodID handleToplevelIconSizeMID;
 
 static jmethodID isNativeInputMethodSupportEnabledMID;
+
+static jclass runnableClass;
+static jmethodID runnableRunMID;
 
 JNIEnv *getEnv() {
     JNIEnv *env;
@@ -236,11 +238,14 @@ static void
 wl_pointer_axis(void *data, struct wl_pointer *wl_pointer, uint32_t time,
                 uint32_t axis, wl_fixed_t value)
 {
-    assert(axis < sizeof(pointer_event.axes)/sizeof(pointer_event.axes[0]));
+    if ( axis >= sizeof(pointer_event.axes)/sizeof(pointer_event.axes[0]) ) {
+        assert(axis < sizeof(pointer_event.axes) / sizeof(pointer_event.axes[0]));
+        return;
+    }
 
     pointer_event.axes[axis].has_vector_value = true;
     pointer_event.time                        = time;
-    pointer_event.axes[axis].vector_value     = value;
+    pointer_event.axes[axis].vector_value    += value;
 }
 
 static void
@@ -255,7 +260,10 @@ static void
 wl_pointer_axis_stop(void *data, struct wl_pointer *wl_pointer,
                      uint32_t time, uint32_t axis)
 {
-    assert(axis < sizeof(pointer_event.axes)/sizeof(pointer_event.axes[0]));
+    if ( axis >= sizeof(pointer_event.axes)/sizeof(pointer_event.axes[0]) ) {
+        assert(axis < sizeof(pointer_event.axes) / sizeof(pointer_event.axes[0]));
+        return;
+    }
 
     pointer_event.axes[axis].has_stop_event = true;
     pointer_event.time                      = time;
@@ -265,7 +273,10 @@ static void
 wl_pointer_axis_discrete(void *data, struct wl_pointer *wl_pointer,
                          uint32_t axis, int32_t discrete)
 {
-    assert(axis < sizeof(pointer_event.axes)/sizeof(pointer_event.axes[0]));
+    if ( axis >= sizeof(pointer_event.axes)/sizeof(pointer_event.axes[0]) ) {
+        assert(axis < sizeof(pointer_event.axes) / sizeof(pointer_event.axes[0]));
+        return;
+    }
 
     // wl_pointer::axis_discrete event is deprecated with wl_pointer version 8 - this event is not sent to clients
     //   supporting version 8 or later.
@@ -282,7 +293,10 @@ static void
 wl_pointer_axis_value120(void *data, struct wl_pointer *wl_pointer,
                          uint32_t axis, int32_t value120)
 {
-    assert(axis < sizeof(pointer_event.axes)/sizeof(pointer_event.axes[0]));
+    if ( axis >= sizeof(pointer_event.axes)/sizeof(pointer_event.axes[0]) ) {
+        assert(axis < sizeof(pointer_event.axes) / sizeof(pointer_event.axes[0]));
+        return;
+    }
 
     pointer_event.axes[axis].has_steps120_value = true;
     pointer_event.axes[axis].steps120_value     = value120;
@@ -335,15 +349,20 @@ wl_pointer_frame(void *data, struct wl_pointer *wl_pointer)
     jobject pointerEventRef = (*env)->CallStaticObjectMethod(env,
                                                              pointerEventClass,
                                                              pointerEventFactoryMID);
-    JNU_CHECK_EXCEPTION(env);
+    if (wlListenerCheckException(env)) {
+        goto finally;
+    }
 
     fillJavaPointerEvent(env, pointerEventRef);
     (*env)->CallStaticVoidMethod(env,
                                  tkClass,
                                  dispatchPointerEventMID,
                                  pointerEventRef);
-    JNU_CHECK_EXCEPTION(env);
+    if (wlListenerCheckException(env)) {
+        goto finally;
+    }
 
+finally:
     resetPointerEvent(&pointer_event);
 }
 
@@ -368,13 +387,13 @@ wl_keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard, uint32_t format,
 {
     JNIEnv* env = getEnv();
     if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
-        JNU_ThrowInternalError(env, "wl_keyboard_keymap supplied unknown keymap format");
+        wlListenerThrowInternalError(env, "wl_keyboard_keymap supplied unknown keymap format");
         return;
     }
 
     char *serializedKeymap = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
     if (serializedKeymap == MAP_FAILED) {
-        JNU_ThrowInternalError(env, "wl_keyboard_keymap: failed to memory-map keymap");
+        wlListenerThrowInternalError(env, "wl_keyboard_keymap: failed to memory-map keymap");
         return;
     }
 
@@ -393,7 +412,7 @@ wl_keyboard_enter(void *data, struct wl_keyboard *wl_keyboard,
                                  tkClass,
                                  dispatchKeyboardEnterEventMID,
                                  serial, jlong_to_ptr(surface));
-    JNU_CHECK_EXCEPTION(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -414,7 +433,7 @@ wl_keyboard_leave(void *data, struct wl_keyboard *wl_keyboard,
                                  dispatchKeyboardLeaveEventMID,
                                  serial,
                                  jlong_to_ptr(surface));
-    JNU_CHECK_EXCEPTION(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -431,7 +450,7 @@ wl_keyboard_modifiers(void *data, struct wl_keyboard *wl_keyboard,
                                  tkClass,
                                  dispatchKeyboardModifiersEventMID,
                                  serial);
-    JNU_CHECK_EXCEPTION(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -458,7 +477,7 @@ wlPostKeyEvent(const struct WLKeyEvent* event)
             event->keyChar,
             event->modifiers
     );
-    JNU_CHECK_EXCEPTION(env);
+    wlListenerCheckException(env);
 }
 
 static const struct wl_keyboard_listener wl_keyboard_listener = {
@@ -488,7 +507,7 @@ wl_relative_motion(void *data,
                                  tkClass,
                                  dispatchRelativePointerEventMID,
                                  ddx, ddy);
-    JNU_CHECK_EXCEPTION(env);
+    wlListenerCheckException(env);
 }
 
 static const struct zwp_relative_pointer_v1_listener relative_pointer_listener = {
@@ -581,7 +600,7 @@ xdg_toplevel_icon_manager_icon_size(void *data,
     }
 
     (*env)->CallStaticVoidMethod(env, tkClass, handleToplevelIconSizeMID, size);
-    JNU_CHECK_EXCEPTION(env);
+    wlListenerCheckException(env);
 }
 
 static void
@@ -660,11 +679,6 @@ registry_global(void *data, struct wl_registry *wl_registry,
     else if (strcmp(interface, zwp_relative_pointer_manager_v1_interface.name) == 0) {
         relative_pointer_manager = wl_registry_bind(wl_registry, name, &zwp_relative_pointer_manager_v1_interface, 1);
     }
-#ifdef HAVE_GTK_SHELL1
-    else if (strcmp(interface, gtk_shell1_interface.name) == 0) {
-        gtk_shell1 = wl_registry_bind(wl_registry, name, &gtk_shell1_interface, 1);
-    }
-#endif
     else if (strcmp(interface, wl_data_device_manager_interface.name) == 0) {
       wl_ddm = wl_registry_bind(wl_registry, name,&wl_data_device_manager_interface, 3);
     } else if (strcmp(interface, zwp_primary_selection_device_manager_v1_interface.name) == 0) {
@@ -696,6 +710,10 @@ registry_global(void *data, struct wl_registry *wl_registry,
             waiting_for_xdg_toplevel_icon_manager_done = true;
             xdg_toplevel_icon_manager_v1_add_listener(xdg_toplevel_icon_manager, &xdg_toplevel_icon_manager_v1_listener, NULL);
         }
+    } else if(strcmp(interface, wp_cursor_shape_manager_v1_interface.name) == 0) {
+        wp_cursor_shape_manager = wl_registry_bind(wl_registry, name, &wp_cursor_shape_manager_v1_interface, 1);
+    } else if (strcmp(interface, ext_data_control_manager_v1_interface.name) == 0) {
+        ext_data_control_manager = wl_registry_bind(wl_registry, name, &ext_data_control_manager_v1_interface, 1);
     }
 }
 
@@ -799,6 +817,13 @@ initJavaRefs(JNIEnv *env, jclass clazz)
     CHECK_NULL_RETURN(yAxis_vectorValueFID = (*env)->GetFieldID(env, pointerEventClass, "yAxis_vectorValue", "D"), JNI_FALSE);
     CHECK_NULL_RETURN(yAxis_steps120ValueFID = (*env)->GetFieldID(env, pointerEventClass, "yAxis_steps120Value", "I"), JNI_FALSE);
 
+    CHECK_NULL_RETURN(handleWaylandLogMID = (*env)->GetStaticMethodID(env, tkClass, "handleWaylandLog", "(Ljava/lang/String;)V"), JNI_FALSE);
+    CHECK_NULL_RETURN(handleProtocolErrorMID = (*env)->GetStaticMethodID(env, tkClass,
+                                                                              "handleProtocolError",
+                                                                              "(Ljava/lang/String;IJ)V"),
+                      JNI_FALSE);
+    CHECK_NULL_RETURN(handleExceptionFromEventHandlerMID = (*env)->GetStaticMethodID(
+        env, tkClass,"handleExceptionFromEventHandler", "(Ljava/lang/Throwable;)V"), JNI_FALSE);
     CHECK_NULL_RETURN(dispatchKeyboardEnterEventMID = (*env)->GetStaticMethodID(env, tkClass,
                                                                                 "dispatchKeyboardEnterEvent",
                                                                                 "(JJ)V"),
@@ -824,6 +849,13 @@ initJavaRefs(JNIEnv *env, jclass clazz)
                                                                                        "isNativeInputMethodSupportEnabled",
                                                                                        "()Z"),
                       JNI_FALSE);
+
+    CHECK_NULL_RETURN(runnableClass = (*env)->FindClass(env, "java/lang/Runnable"), JNI_FALSE);
+    CHECK_NULL_THROW_OOME_RETURN(env,
+                                 runnableClass = (jclass)(*env)->NewGlobalRef(env, runnableClass),
+                                 "Allocation of a global reference to java.lang.Runnable failed",
+                                 JNI_FALSE);
+    CHECK_NULL_RETURN(runnableRunMID = (*env)->GetMethodID(env, runnableClass, "run", "()V"), JNI_FALSE);
 
     jclass wlgeClass = (*env)->FindClass(env, "sun/awt/wl/WLGraphicsEnvironment");
     CHECK_NULL_RETURN(wlgeClass, JNI_FALSE);
@@ -927,6 +959,28 @@ Java_sun_awt_wl_WLDisplay_connect(JNIEnv *env, jobject obj)
     return ptr_to_jlong(wl_display_connect(NULL));
 }
 
+static void
+libwaylandLoggingCallback(const char *fmt, va_list args)
+{
+    char buf[4096];
+    vsnprintf(buf, sizeof buf, fmt, args);
+    // NOTE: vsnprintf always null-terminates the buffer
+
+    JNIEnv *env = getEnv();
+    jstring message = (*env)->NewStringUTF(env, buf);
+    JNU_CHECK_EXCEPTION(env);
+
+    (*env)->CallStaticVoidMethod(env, tkClass, handleWaylandLogMID, message);
+    (*env)->ExceptionCheck(env);
+    (*env)->DeleteLocalRef(env, message);
+}
+
+JNIEXPORT void JNICALL
+Java_sun_awt_wl_WLToolkit_initLibwaylandLogging(JNIEnv *env, jclass clazz)
+{
+    wl_log_set_handler_client(libwaylandLoggingCallback);
+}
+
 JNIEXPORT void JNICALL
 Java_sun_awt_wl_WLToolkit_initIDs(JNIEnv *env, jclass clazz, jlong displayPtr)
 {
@@ -959,6 +1013,61 @@ Java_sun_awt_wl_WLToolkit_initIDs(JNIEnv *env, jclass clazz, jlong displayPtr)
     checkInterfacesPresent(env);
 }
 
+static bool wlCheckProtocolError(JNIEnv *env)
+{
+    assert(env != NULL);
+    if (errno != EPROTO) {
+        return false;
+    }
+
+    const struct wl_interface *interface = NULL;
+    uint32_t object_id = 0;
+    uint32_t error_code = wl_display_get_protocol_error(wl_display, &interface, &object_id);
+
+    jstring interfaceJavaString = NULL;
+    if (interface != NULL) {
+        interfaceJavaString = (*env)->NewStringUTF(env, interface->name);
+        EXCEPTION_CLEAR(env);
+    }
+
+    // This will throw an exception
+    (*env)->CallStaticVoidMethod(env, tkClass, handleProtocolErrorMID, interfaceJavaString, (jint)error_code, (jlong)object_id);
+    bool result = (*env)->ExceptionCheck(env) == JNI_TRUE;
+
+    if (interfaceJavaString != NULL) {
+        (*env)->DeleteLocalRef(env, interfaceJavaString);
+    }
+
+    return result;
+}
+
+bool wlListenerCheckException(JNIEnv *env)
+{
+    jthrowable exception = (*env)->ExceptionOccurred(env);
+    if (exception == NULL) {
+        return false;
+    }
+
+    // 'exception' is a local ref at this point, it's okay to call ExceptionClear
+    (*env)->ExceptionClear(env);
+
+    (*env)->CallStaticVoidMethod(env, tkClass, handleExceptionFromEventHandlerMID, exception);
+    if ((*env)->ExceptionCheck(env) == JNI_TRUE) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+
+    (*env)->DeleteLocalRef(env, exception);
+
+    return true;
+}
+
+void wlListenerThrowInternalError(JNIEnv *env, const char *message)
+{
+    JNU_ThrowInternalError(env, message);
+    wlListenerCheckException(env);
+}
+
 JNIEXPORT jboolean JNICALL
 Java_sun_awt_wl_WLToolkit_isSSDAvailableImpl
   (JNIEnv *env, jobject cls)
@@ -973,7 +1082,9 @@ Java_sun_awt_wl_WLToolkit_dispatchEventsOnEDT
     // Dispatch all the events on the display's default event queue.
     // The handlers of those events will be called from here, i.e. on EDT,
     // and therefore must not block indefinitely.
-    wl_display_dispatch_pending(wl_display);
+    if (wl_display_dispatch_pending(wl_display) == -1) {
+        wlCheckProtocolError(env);
+    }
 }
 
 /**
@@ -1015,6 +1126,11 @@ wlFlushToServer(JNIEnv *env)
         }
     }
 
+    if (rc < 0 && wlCheckProtocolError(env)) {
+        // an exception was thrown by wlCheckProtocolError
+        return sun_awt_wl_WLToolkit_READ_RESULT_ERROR;
+    }
+
     if (rc < 0 && errno != EPIPE) {
         JNU_ThrowByName(env, "java/awt/AWTError", "Wayland display error flushing data out to the server");
         return sun_awt_wl_WLToolkit_READ_RESULT_ERROR;
@@ -1028,6 +1144,39 @@ Java_sun_awt_wl_WLToolkit_flushImpl
   (JNIEnv *env, jobject obj)
 {
     (void) wlFlushToServer(env);
+}
+
+static void sync_callback_done(void *data, struct wl_callback *wl_callback, uint32_t callback_data)
+{
+    (void)callback_data;
+    jobject callback = (jobject)data;
+    JNIEnv *env = getEnv();
+    if (env != NULL && callback != NULL) {
+        (*env)->CallVoidMethod(env, callback, runnableRunMID);
+        wlListenerCheckException(env);
+        (*env)->DeleteGlobalRef(env, callback);
+    }
+    wl_callback_destroy(wl_callback);
+}
+
+JNIEXPORT void JNICALL
+Java_sun_awt_wl_WLToolkit_syncCallbackImpl(JNIEnv *env, jclass tk, jobject callbackObj)
+{
+    (void)tk;
+
+    struct wl_callback *wl_callback = wl_display_sync(wl_display);
+    CHECK_NULL_THROW_OOME(env, wl_callback, "wl_display_sync()");
+
+    callbackObj = (*env)->NewGlobalRef(env, callbackObj);
+    if (callbackObj == NULL) {
+        wl_callback_destroy(wl_callback);
+        return;
+    }
+
+    static const struct wl_callback_listener listener = {
+        .done = sync_callback_done,
+    };
+    wl_callback_add_listener(wl_callback, &listener, callbackObj);
 }
 
 JNIEXPORT jint JNICALL
@@ -1081,6 +1230,25 @@ Java_sun_awt_wl_WLToolkit_readEvents
     } else {
         wl_display_cancel_read(wl_display);
         return sun_awt_wl_WLToolkit_READ_RESULT_FINISHED_NO_EVENTS;
+    }
+}
+
+// Wait for a roundtrip in a separate queue.
+// We can't use the default queue, because we're already holding awtLock at this point.
+// Using a separate queue will only make sure that the *server* has produced events and put them in the respective queues,
+// those events are not yet (and don't need to be) processed by JBR yet.
+JNIEXPORT void JNICALL
+Java_sun_awt_wl_WLToolkit_roundtripForSyncBeforePopupMap
+  (JNIEnv *env, jclass clazz)
+{
+    struct wl_event_queue *queue = wl_display_create_queue(wl_display);
+    if (queue == NULL) {
+        return;
+    }
+    int rc = wl_display_roundtrip_queue(wl_display, queue);
+    wl_event_queue_destroy(queue);
+    if (rc < 0) {
+        wlCheckProtocolError(env);
     }
 }
 

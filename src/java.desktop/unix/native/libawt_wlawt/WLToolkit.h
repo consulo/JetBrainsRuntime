@@ -23,8 +23,11 @@
  * questions.
  */
 
+#include <stdbool.h>
+
 #include <wayland-client.h>
 #include <wayland-cursor.h>
+
 #include "xdg-shell.h"
 #include "xdg-activation-v1.h"
 #include "xdg-output-unstable-v1.h"
@@ -34,6 +37,9 @@
 #include "text-input-unstable-v3.h"
 #include "xdg-decoration-unstable-v1.h"
 #include "xdg-toplevel-icon-v1.h"
+#include "cursor-shape-v1.h"
+#include "ext-data-control-v1.h"
+
 #include "jvm_md.h"
 #include "jni_util.h"
 
@@ -53,7 +59,6 @@
         }                                       \
     } while(0)                                  \
 
-struct gtk_shell1;
 
 extern struct wl_seat *wl_seat;
 extern struct wl_display *wl_display;
@@ -63,9 +68,6 @@ extern struct wl_subcompositor *wl_subcompositor;
 extern struct xdg_wm_base *xdg_wm_base;
 extern struct wp_viewporter *wp_viewporter;
 extern struct xdg_activation_v1 *xdg_activation_v1; // optional, check for NULL before use
-#ifdef HAVE_GTK_SHELL1
-extern struct gtk_shell1* gtk_shell1; // optional, check for NULL before use
-#endif
 extern struct wl_cursor_theme *wl_cursor_theme;
 extern struct wl_data_device_manager *wl_ddm;
 extern struct zwp_primary_selection_device_manager_v1 *zwp_selection_dm; // optional, check for NULL before use
@@ -74,8 +76,14 @@ extern struct zwp_relative_pointer_manager_v1* relative_pointer_manager;
 extern struct zwp_text_input_manager_v3 *zwp_text_input_manager; // optional, check for NULL before use
 extern struct zxdg_decoration_manager_v1* xdg_decoration_manager; // optional, check for NULL before use
 extern struct xdg_toplevel_icon_manager_v1 *xdg_toplevel_icon_manager; // optional, check for NULL before use
+extern struct wp_cursor_shape_manager_v1 *wp_cursor_shape_manager; // optional, check for NULL before use
+extern struct ext_data_control_manager_v1 *ext_data_control_manager; // optional, check for NULL before use
 
 JNIEnv *getEnv();
+
+// Utilities for managing exceptions in Wayland callbacks, where we can't throw
+bool wlListenerCheckException(JNIEnv *env);
+void wlListenerThrowInternalError(JNIEnv *env, const char *message);
 
 int wlFlushToServer(JNIEnv* env);
 struct wl_cursor_theme *getCursorTheme(int scale);

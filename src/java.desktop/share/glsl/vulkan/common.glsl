@@ -30,7 +30,7 @@ vec4 transformToDeviceSpace(vec2 v) {
 // Fragment shader push constant support.
 #ifdef STAGE_FRAG
 #define PUSH_CONSTANTS_IMPL(STATEMENT) \
-    layout(push_constant) uniform PushConstants { VKTransform _; VKCompositeConstants push_composite; STATEMENT }
+    layout(push_constant) uniform PushConstants { layout(offset = 24 /* == sizeof(VKTransform) */) VKCompositeConstants push_composite; STATEMENT }
 #define DEFAULT_PUSH_CONSTANTS() PUSH_CONSTANTS_IMPL(STAGE_FRAG)
 #define PUSH_CONSTANTS(TYPE) PUSH_CONSTANTS_IMPL(TYPE push;)
 #endif
@@ -60,6 +60,13 @@ vec4 alphaMask(float alpha, uint alphaType) {
 // Decode color from uint-packed ARGB components.
 vec4 decodeColor(uint srgb) {
     return vec4((uvec4(srgb) >> uvec4(16, 8, 0, 24)) & 0xFFU) / 255.0;
+}
+
+// Convert a color vec3 from linear to sRGB.
+// Implementation matching Metal's fromLinear3.
+vec3 fromLinear3(vec3 c) {
+    // Use approximated calculations to match software rendering
+    return 1.055 * pow(c, vec3(0.416667)) - 0.055;
 }
 
 #ifdef STAGE_FRAG

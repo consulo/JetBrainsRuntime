@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -321,6 +321,9 @@ class JvmtiExport : public AllStatic {
   static void expose_single_stepping(JavaThread *thread) NOT_JVMTI_RETURN;
   static bool hide_single_stepping(JavaThread *thread) NOT_JVMTI_RETURN_(false);
 
+  // frame pop management
+  static bool has_frame_pop_for_top_frame(JavaThread *current);
+
   // Methods that notify the debugger that something interesting has happened in the VM.
   static void post_early_vm_start        () NOT_JVMTI_RETURN;
   static void post_vm_start              () NOT_JVMTI_RETURN;
@@ -374,6 +377,7 @@ class JvmtiExport : public AllStatic {
     JVMTI_ONLY(return _should_post_class_file_load_hook);
     NOT_JVMTI(return false;)
   }
+  static bool has_frame_pops(JavaThread* thread) NOT_JVMTI_RETURN_(false);
   static bool is_early_phase() NOT_JVMTI_RETURN_(false);
   static bool has_early_class_hook_env() NOT_JVMTI_RETURN_(false);
   static bool has_early_vmstart_env() NOT_JVMTI_RETURN_(false);

@@ -22,6 +22,8 @@
 // questions.
 
 #include <assert.h>
+#include <stdbool.h>
+
 #include "VKUtil.h"
 #include "VKEnv.h"
 #include "VKPipelines.h"
@@ -139,13 +141,13 @@ static VKPipelineInfo VKPipelines_CreatePipelines(VKRenderPassContext* renderPas
     VKShaders* shaders = pipelineContext->shaders;
     VKComposites* composites = &VKEnv_GetInstance()->composites;
 
-    VKPipelineInfo pipelineInfos[count];
+    DECL_ARRAY(VKPipelineInfo, pipelineInfos, count);
     // Setup pipeline creation structs.
-    static const uint32_t MAX_DYNAMIC_STATES = 2;
+    #define MAX_DYNAMIC_STATES 2
     typedef struct {
         VkPipelineShaderStageCreateInfo createInfos[2]; // vert + frag
     } ShaderStages;
-    ShaderStages stages[count];
+    DECL_ARRAY(ShaderStages, stages, count);
     typedef struct {
         uint32_t inAlphaType, outAlphaType, shaderVariant, shaderModifier;
     } SpecializationData;
@@ -159,12 +161,31 @@ static VKPipelineInfo VKPipelines_CreatePipelines(VKRenderPassContext* renderPas
         VkSpecializationInfo info;
         SpecializationData data;
     } Specialization;
-    Specialization specializations[count];
-    VkPipelineInputAssemblyStateCreateInfo inputAssemblyStates[count];
-    VkPipelineDepthStencilStateCreateInfo depthStencilStates[count];
-    VkPipelineDynamicStateCreateInfo dynamicStates[count];
-    VkDynamicState dynamicStateValues[count][MAX_DYNAMIC_STATES];
-    VkGraphicsPipelineCreateInfo createInfos[count];
+    DECL_ARRAY(Specialization, specializations, count);
+    DECL_ARRAY(VkPipelineInputAssemblyStateCreateInfo, inputAssemblyStates, count);
+    DECL_ARRAY(VkPipelineDepthStencilStateCreateInfo, depthStencilStates, count);
+    DECL_ARRAY(VkPipelineDynamicStateCreateInfo, dynamicStates, count);
+    DECL_ARRAY_2D(VkDynamicState, dynamicStateValues, count, MAX_DYNAMIC_STATES);
+    DECL_ARRAY(VkGraphicsPipelineCreateInfo, createInfos, count);
+
+    void* rasterizationStatePNext = NULL;
+    VkPipelineRasterizationLineStateCreateInfoEXT lineRasterizationState = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT,
+        .lineRasterizationMode = VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT
+    };
+    if (device->bresenhamLinesSupported) {
+        lineRasterizationState.pNext = rasterizationStatePNext;
+        rasterizationStatePNext = &lineRasterizationState;
+    }
+
+    const VkPipelineRasterizationStateCreateInfo rasterizationState = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .pNext = rasterizationStatePNext,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .lineWidth = 1.0f
+    };
+
     for (uint32_t i = 0; i < count; i++) {
         const VKCompositeState* compositeState =
             VKComposites_GetState(composites, descriptors[i].composite, descriptors[i].dstOpaque);
@@ -190,20 +211,14 @@ static VKPipelineInfo VKPipelines_CreatePipelines(VKRenderPassContext* renderPas
             .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
             .topology = descriptors[i].topology
         };
-        static const VkViewport viewport = {};
-        static const VkRect2D scissor = {};
+        static const VkViewport viewport = { 0 };
+        static const VkRect2D scissor = { 0 };
         static const VkPipelineViewportStateCreateInfo viewportState = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
             .viewportCount = 1,
             .pViewports = &viewport,
             .scissorCount = 1,
             .pScissors = &scissor
-        };
-        static const VkPipelineRasterizationStateCreateInfo rasterizationState = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .polygonMode = VK_POLYGON_MODE_FILL,
-            .cullMode = VK_CULL_MODE_NONE,
-            .lineWidth = 1.0f
         };
         static const VkPipelineMultisampleStateCreateInfo multisampleState = {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -277,6 +292,26 @@ static VKPipelineInfo VKPipelines_CreatePipelines(VKRenderPassContext* renderPas
             createInfos[i].layout = pipelineContext->maskFillPipelineLayout;
             stages[i] = (ShaderStages) {{ shaders->mask_fill_vert, shaders->gradient_frag }};
             break;
+        case SHADER_GRADIENT_LINEAR_PUSH:
+            createInfos[i].pVertexInputState = &INPUT_STATE_PRIMITIVE;
+            createInfos[i].layout = pipelineContext->maskFillPipelineLayout;
+            stages[i] = (ShaderStages) {{ shaders->primitive_vert, shaders->gradient_linear_push_frag }};
+            break;
+        case SHADER_GRADIENT_LINEAR_PUSH | SHADER_MASK:
+            createInfos[i].pVertexInputState = &INPUT_STATE_MASK_FILL;
+            createInfos[i].layout = pipelineContext->maskFillPipelineLayout;
+            stages[i] = (ShaderStages) {{ shaders->mask_fill_vert, shaders->gradient_linear_push_frag }};
+            break;
+        case SHADER_GRADIENT_RADIAL_PUSH:
+            createInfos[i].pVertexInputState = &INPUT_STATE_PRIMITIVE;
+            createInfos[i].layout = pipelineContext->maskFillPipelineLayout;
+            stages[i] = (ShaderStages) {{ shaders->primitive_vert, shaders->gradient_radial_push_frag }};
+            break;
+        case SHADER_GRADIENT_RADIAL_PUSH | SHADER_MASK:
+            createInfos[i].pVertexInputState = &INPUT_STATE_MASK_FILL;
+            createInfos[i].layout = pipelineContext->maskFillPipelineLayout;
+            stages[i] = (ShaderStages) {{ shaders->mask_fill_vert, shaders->gradient_radial_push_frag }};
+            break;
         case SHADER_BLIT:
             createInfos[i].pVertexInputState = &INPUT_STATE_BLIT;
             createInfos[i].layout = pipelineContext->texturePipelineLayout;
@@ -284,14 +319,14 @@ static VKPipelineInfo VKPipelines_CreatePipelines(VKRenderPassContext* renderPas
             break;
         case SHADER_CLIP:
             createInfos[i].pVertexInputState = &INPUT_STATE_CLIP;
-            static const VkStencilOpState CLIP_STENCIL_OP = {
-                .failOp = VK_STENCIL_OP_REPLACE,
-                .passOp = VK_STENCIL_OP_REPLACE,
-                .compareOp = VK_COMPARE_OP_NEVER,
-                .compareMask = 0U,
-                .writeMask = 0xFFFFFFFFU,
-                .reference = CLIP_STENCIL_INCLUDE_VALUE
-            };
+            #define CLIP_STENCIL_OP { \
+                .failOp = VK_STENCIL_OP_REPLACE,\
+                .passOp = VK_STENCIL_OP_REPLACE, \
+                .compareOp = VK_COMPARE_OP_NEVER, \
+                .compareMask = 0U, \
+                .writeMask = 0xFFFFFFFFU, \
+                .reference = CLIP_STENCIL_INCLUDE_VALUE \
+            }
             static const VkPipelineDepthStencilStateCreateInfo CLIP_STENCIL_STATE = {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                 .stencilTestEnable = VK_TRUE,
@@ -316,7 +351,7 @@ static VKPipelineInfo VKPipelines_CreatePipelines(VKRenderPassContext* renderPas
 
     // Create pipelines.
     // TODO pipeline cache
-    VkPipeline pipelines[count];
+    DECL_ARRAY(VkPipeline, pipelines, count);
     VK_IF_ERROR(device->vkCreateGraphicsPipelines(device->handle, VK_NULL_HANDLE, count,
                                                   createInfos, NULL, pipelines)) VK_UNHANDLED_ERROR();
     J2dRlsTraceLn(J2D_TRACE_INFO, "VKPipelines_CreatePipelines: created %d pipelines", count);
@@ -525,8 +560,8 @@ void VKPipelines_DestroyContext(VKPipelineContext* pipelineContext) {
     VKDevice* device = pipelineContext->device;
     assert(device != NULL);
 
-    for (uint32_t i = 0; i < ARRAY_SIZE(pipelineContext->renderPassContexts); i++) {
-        VKPipelines_DestroyRenderPassContext(pipelineContext->renderPassContexts[i]);
+    for (uint32_t i = 0; i < pipelineContext->renderPassContexts.size; i++) {
+        VKPipelines_DestroyRenderPassContext(pipelineContext->renderPassContexts.data[i]);
     }
     ARRAY_FREE(pipelineContext->renderPassContexts);
 
@@ -546,9 +581,9 @@ void VKPipelines_DestroyContext(VKPipelineContext* pipelineContext) {
 
 VKRenderPassContext* VKPipelines_GetRenderPassContext(VKPipelineContext* pipelineContext, VkFormat format) {
     assert(pipelineContext != NULL && pipelineContext->device != NULL);
-    for (uint32_t i = 0; i < ARRAY_SIZE(pipelineContext->renderPassContexts); i++) {
-        if (pipelineContext->renderPassContexts[i]->format == format) {
-            return pipelineContext->renderPassContexts[i];
+    for (uint32_t i = 0; i < pipelineContext->renderPassContexts.size; i++) {
+        if (pipelineContext->renderPassContexts.data[i]->format == format) {
+            return pipelineContext->renderPassContexts.data[i];
         }
     }
     // Not found, create.

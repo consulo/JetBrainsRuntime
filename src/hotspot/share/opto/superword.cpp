@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2007, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -461,6 +461,9 @@ bool SuperWord::transform_loop() {
 //    inserting scalar promotion, vector creation from multiple scalars, and
 //    extraction of scalar values from vectors.
 //
+// Runtime Checks:
+//   Some required properties cannot be proven statically, and require a
+//   runtime check. See VTransform::add_speculative_check
 bool SuperWord::SLP_extract() {
   assert(cl()->is_main_loop(), "SLP should only work on main loops");
 
@@ -832,12 +835,18 @@ bool VLoopDependencyGraph::independent(Node* s1, Node* s2) const {
   Node* shallow = d1 > d2 ? s2 : s1;
   int min_d = MIN2(d1, d2); // prune traversal at min_d
 
+  // If we can speculate (using the aliasing runtime check), we can drop the weak edges,
+  // and later insert a runtime check.
+  // If we cannot speculate (aliasing analysis runtime checks), we need to respect all edges.
+  bool speculate_away_weak_edges = _vloop.use_speculative_aliasing_checks();
+
   ResourceMark rm;
   Unique_Node_List worklist;
   worklist.push(deep);
   for (uint i = 0; i < worklist.size(); i++) {
     Node* n = worklist.at(i);
     for (PredsIterator preds(*this, n); !preds.done(); preds.next()) {
+      if (speculate_away_weak_edges && preds.is_current_weak_memory_edge()) { continue; }
       Node* pred = preds.current();
       if (_vloop.in_bb(pred) && depth(pred) >= min_d) {
         if (pred == shallow) {
@@ -869,9 +878,16 @@ bool VLoopDependencyGraph::mutually_independent(const Node_List* nodes) const {
     worklist.push(n); // start traversal at all nodes in nodes list
     nodes_set.set(_body.bb_idx(n));
   }
+
+  // If we can speculate (using the aliasing runtime check), we can drop the weak edges,
+  // and later insert a runtime check.
+  // If we cannot speculate (aliasing analysis runtime checks), we need to respect all edges.
+  bool speculate_away_weak_edges = _vloop.use_speculative_aliasing_checks();
+
   for (uint i = 0; i < worklist.size(); i++) {
     Node* n = worklist.at(i);
     for (PredsIterator preds(*this, n); !preds.done(); preds.next()) {
+      if (speculate_away_weak_edges && preds.is_current_weak_memory_edge()) { continue; }
       Node* pred = preds.current();
       if (_vloop.in_bb(pred) && depth(pred) >= min_d) {
         if (nodes_set.test(_body.bb_idx(pred))) {
@@ -1936,6 +1952,7 @@ bool SuperWord::schedule_and_apply() const {
   VTransformTrace trace(_vloop.vtrace(),
                         is_trace_superword_rejections(),
                         is_trace_align_vector(),
+                        _vloop.is_trace_speculative_aliasing_analysis(),
                         _vloop.is_trace_speculative_runtime_checks(),
                         is_trace_superword_info());
 #endif
@@ -1989,7 +2006,8 @@ void VTransform::apply() {
   adjust_pre_loop_limit_to_align_main_loop_vectors();
   C->print_method(PHASE_AUTO_VECTORIZATION3_AFTER_ADJUST_LIMIT, 4, cl());
 
-  apply_speculative_runtime_checks();
+  apply_speculative_alignment_runtime_checks();
+  apply_speculative_aliasing_runtime_checks();
   C->print_method(PHASE_AUTO_VECTORIZATION4_AFTER_SPECULATIVE_RUNTIME_CHECKS, 4, cl());
 
   apply_vectorization();
@@ -2577,6 +2595,11 @@ static bool can_subword_truncate(Node* in, const Type* type) {
     return false;
   }
 
+  // Since casts specifically change the type of a node, stay on the safe side and do not truncate them.
+  if (in->is_ConstraintCast()) {
+    return false;
+  }
+
   // Cannot be truncated:
   switch (opc) {
   case Op_AbsI:
@@ -2589,6 +2612,8 @@ static bool can_subword_truncate(Node* in, const Type* type) {
   case Op_RotateRight:
   case Op_RotateLeft:
   case Op_PopCountI:
+  case Op_ReverseBytesS:
+  case Op_ReverseBytesUS:
   case Op_ReverseBytesI:
   case Op_ReverseI:
   case Op_CountLeadingZerosI:
@@ -2597,6 +2622,9 @@ static bool can_subword_truncate(Node* in, const Type* type) {
   case Op_IsFiniteD:
   case Op_IsInfiniteF:
   case Op_IsInfiniteD:
+  case Op_CmpLTMask:
+  case Op_RoundF:
+  case Op_RoundD:
   case Op_ExtractS:
   case Op_ExtractC:
   case Op_ExtractB:

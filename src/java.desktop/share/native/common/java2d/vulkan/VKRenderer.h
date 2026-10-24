@@ -27,11 +27,20 @@
 #ifndef VKRenderer_h_Included
 #define VKRenderer_h_Included
 
+#include "sun_java2d_pipe_BufferedTextPipe.h"
 #include "VKTypes.h"
 #include "VKPipelines.h"
 #include "VKTexturePool.h"
 
-#define NO_CLIP ((VkRect2D) {{0, 0}, {0x7FFFFFFFU, 0x7FFFFFFFU}})
+#define BYTES_PER_GLYPH_IMAGE \
+sun_java2d_pipe_BufferedTextPipe_BYTES_PER_GLYPH_IMAGE
+#define BYTES_PER_GLYPH_POSITION \
+sun_java2d_pipe_BufferedTextPipe_BYTES_PER_GLYPH_POSITION
+#define BYTES_PER_POSITIONED_GLYPH \
+(BYTES_PER_GLYPH_IMAGE + BYTES_PER_GLYPH_POSITION)
+
+#define J2D_VK_NO_CLIP_RECT_INITIALIZER {{0, 0}, {0x7FFFFFFFU, 0x7FFFFFFFU}}
+#define J2D_VK_NO_CLIP_RECT ((VkRect2D) J2D_VK_NO_CLIP_RECT_INITIALIZER)
 
 struct VKRenderingContext {
     VKSDOps*        surface;
@@ -73,6 +82,8 @@ void VKRenderer_RecordBarriers(VKRenderer* renderer,
                                VkImageMemoryBarrier* imageBarriers, VKBarrierBatch* imageBatch);
 
 void VKRenderer_CreateImageDescriptorSet(VKRenderer* renderer, VkDescriptorPool* descriptorPool, VkDescriptorSet* set);
+
+void VKRenderer_CleanupPresentations(VKRenderer* renderer, VkBool32 wait, VKSwapchain *waitSwapchain);
 
 void VKRenderer_Destroy(VKRenderer* renderer);
 
@@ -131,6 +142,16 @@ void VKRenderer_RenderParallelogram(VkBool32 fill,
                                     jfloat dx21, jfloat dy21,
                                     jfloat dx12, jfloat dy12);
 
+void VKRenderer_DrawLine(jint x1, jint y1, jint x2, jint y2);
+
+void VKRenderer_DrawPoly(jint nPoints, jint isClosed,
+                         jint transX, jint transY,
+                         jint *xPoints, jint *yPoints);
+
+void VKRenderer_DrawPixel(jint x, jint y);
+
+void VKRenderer_DrawScanlines(jint count, jint* scanlines);
+
 void VKRenderer_FillSpans(jint spanCount, jint *spans);
 
 void VKRenderer_MaskFill(jint x, jint y, jint w, jint h,
@@ -140,6 +161,22 @@ void VKRenderer_DrawImage(VKImage* image, VkFormat format,
                           VKPackedSwizzle swizzle, jint filter, VKSamplerWrap wrap,
                           float sx1, float sy1, float sx2, float sy2,
                           float dx1, float dy1, float dx2, float dy2);
+
+void VKRenderer_SetLinearGradientPaint(jboolean linear, jint cycleMethod, jint numStops,
+                                       float p0, float p1, float p3,
+                                       void* fractions, void* pixels);
+
+void VKRenderer_SetRadialGradientPaint(jboolean linear, jint cycleMethod, jint numStops,
+                                       float m00, float m01, float m02,
+                                       float m10, float m11, float m12,
+                                       float focusX,
+                                       void* fractions, void* pixels);
+
+void VKRenderer_DrawGlyphList(jint numGlyphs,
+                              jfloat glyphListOrigX, jfloat glyphListOrigY,
+                              jboolean usePositions,
+                              unsigned char* images,
+                              unsigned char* positions);
 
 VKRenderingContext* VKRenderer_GetContext();
 VKTexturePool* VKRenderer_GetTexturePool(VKRenderer* );

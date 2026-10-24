@@ -228,7 +228,7 @@ void BarrierSetAssembler::nmethod_entry_barrier(MacroAssembler* masm, Label* slo
   BarrierSetNMethod* bs_nm = BarrierSet::barrier_set()->barrier_set_nmethod();
   Assembler::IncompressibleScope scope(masm); // Fixed length: see entry_barrier_offset()
 
-  Label local_guard;
+  Label local_guard, skip_barrier;
   NMethodPatchingType patching_type = nmethod_patching_type();
 
   if (slow_path == nullptr) {
@@ -241,10 +241,6 @@ void BarrierSetAssembler::nmethod_entry_barrier(MacroAssembler* masm, Label* slo
   __ lwu(t0, *guard);
 
   switch (patching_type) {
-    case NMethodPatchingType::conc_data_patch:
-      // Subsequent loads of oops must occur after load of guard value.
-      // BarrierSetNMethod::disarm sets guard with release semantics.
-      __ membar(MacroAssembler::LoadLoad); // fall through to stw_instruction_and_data_patch
     case NMethodPatchingType::stw_instruction_and_data_patch:
       {
         // With STW patching, no data or instructions are updated concurrently,
@@ -294,24 +290,26 @@ void BarrierSetAssembler::nmethod_entry_barrier(MacroAssembler* masm, Label* slo
       ShouldNotReachHere();
   }
 
+  Label& barrier_target = slow_path == nullptr ? skip_barrier : *slow_path;
   if (slow_path == nullptr) {
-    Label skip_barrier;
-    __ beq(t0, t1, skip_barrier);
+    __ beq(t0, t1, barrier_target, true /* is_far */);
+  } else {
+    __ bne(t0, t1, barrier_target, true /* is_far */);
+  }
 
+  if (slow_path == nullptr) {
     __ rt_call(StubRoutines::method_entry_barrier());
-
     __ j(skip_barrier);
 
     __ bind(local_guard);
 
     MacroAssembler::assert_alignment(__ pc());
     __ emit_int32(0); // nmethod guard value. Skipped over in common case.
-    __ bind(skip_barrier);
   } else {
-    __ beq(t0, t1, *continuation);
-    __ j(*slow_path);
     __ bind(*continuation);
   }
+
+  __ bind(skip_barrier);
 }
 
 void BarrierSetAssembler::c2i_entry_barrier(MacroAssembler* masm) {

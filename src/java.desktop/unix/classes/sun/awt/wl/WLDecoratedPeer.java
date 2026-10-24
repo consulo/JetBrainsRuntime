@@ -48,27 +48,17 @@ public abstract class WLDecoratedPeer extends WLWindowPeer {
 
     private static DecorationTypePreference determineDecorationPreferenceType() {
         String decorationPreference = System.getProperty("sun.awt.wl.WindowDecorationStyle");
-        if (decorationPreference != null) {
-            if ("builtin".equals(decorationPreference)) {
-                return DecorationTypePreference.DEFAULT;
-            } else if ("gtk".equals(decorationPreference) && isGTKAvailable()) {
-                return DecorationTypePreference.GTK;
-            } else if ("server".equals(decorationPreference) && WLToolkit.isSSDAvailable()) {
-                return DecorationTypePreference.SERVER;
-            } else {
-                return DecorationTypePreference.DEFAULT;
-            }
+        if ((decorationPreference == null || "server".equals(decorationPreference)) && WLToolkit.isSSDAvailable()) {
+            return DecorationTypePreference.SERVER;
+        } else if ((decorationPreference == null || "gtk".equals(decorationPreference)) && isGTKAvailable()) {
+            return DecorationTypePreference.GTK;
         } else {
-            if (!WLToolkit.isKDE() && isGTKAvailable()) {
-                return DecorationTypePreference.GTK;
-            } else {
-                return DecorationTypePreference.DEFAULT;
-            }
+            return DecorationTypePreference.DEFAULT;
         }
     }
 
     public WLDecoratedPeer(Window target, boolean isUndecorated, boolean showMinimize, boolean showMaximize) {
-        super(target, decorationType != DecorationTypePreference.SERVER);
+        super(target, isUndecorated || decorationType != DecorationTypePreference.SERVER);
         this.isUndecorated = isUndecorated;
         this.showMinimize = showMinimize;
         this.showMaximize = showMaximize;

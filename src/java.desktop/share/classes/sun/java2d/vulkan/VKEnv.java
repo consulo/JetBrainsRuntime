@@ -31,6 +31,7 @@ import sun.util.logging.PlatformLogger;
 import java.awt.Toolkit;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 public final class VKEnv {
@@ -43,8 +44,9 @@ public final class VKEnv {
         private static final String vulkanProperty = AccessController.doPrivileged(
                 (PrivilegedAction<String>) () -> System.getProperty("sun.java2d.vulkan", ""));
 
-        private static final boolean vulkan = "true".equalsIgnoreCase(vulkanProperty);
-        private static final boolean verbose = "True".equals(vulkanProperty);
+        private static final boolean forceVulkan = "force".equalsIgnoreCase(vulkanProperty);
+        private static final boolean vulkan = forceVulkan || "true".equalsIgnoreCase(vulkanProperty);
+        private static final boolean verbose = "True".equals(vulkanProperty) || "Force".equals(vulkanProperty);
 
         @SuppressWarnings("removal")
         private static final boolean accelsd = vulkan && "true".equalsIgnoreCase(AccessController.doPrivileged(
@@ -66,16 +68,32 @@ public final class VKEnv {
     private static VKGPU[] devices;
     private static VKGPU defaultDevice;
 
-    private static native long initPlatform(long nativePtr);
+    public static native long initPlatformWayland(long nativePtr);
+    public static native long initPlatformX11(long nativePtr);
+    public static native long initPlatformWin32();
     private static native VKGPU[] initNative(long platformData);
 
-    public static synchronized void init(long nativePtr) {
+    static class VKInitializationException extends RuntimeException {
+        private static final long serialVersionUID = 7476713504086007145L;
+        public VKInitializationException(String message) {
+            super(message);
+        }
+    }
+
+    // for use in init's getPlatformData
+    public static void requireForceVulkan(String platformDescription) {
+        if (Options.forceVulkan) {
+            return;
+        }
+        throw new VKInitializationException("Vulkan is experimental on '" + platformDescription + "', use -Dsun.java2d.vulkan=Force to enable anyway.");
+    }
+
+    public static synchronized void init(Supplier<Long> getPlatformData) {
         if (state > INITIALIZING) return;
         int newState = DISABLED;
         if (Options.vulkan) {
             try {
-                long platformData = nativePtr == 0 ? 0 : initPlatform(nativePtr);
-                devices = initNative(platformData);
+                devices = initNative(getPlatformData.get());
                 if (devices != null) {
                     newState = ENABLED;
                     if (Options.accelsd) newState |= ACCELSD_BIT;
@@ -94,7 +112,7 @@ public final class VKEnv {
                     VKMaskFill.register();
                     VKMaskBlit.register();
                 }
-            } catch (UnsatisfiedLinkError e) {
+            } catch (UnsatisfiedLinkError | VKInitializationException e) {
                 newState = DISABLED;
                 if (Options.verbose) {
                     System.err.println("Vulkan backend is not available");
@@ -140,7 +158,7 @@ public final class VKEnv {
                 Toolkit.getDefaultToolkit();
             }
             // Still not initialized? Init without platform data.
-            if (state == INITIALIZING) init(0);
+            if (state == INITIALIZING) init(() -> 0L);
         }
     }
 
@@ -163,5 +181,20 @@ public final class VKEnv {
         checkInit();
         final VKGPU first = defaultDevice;
         return Stream.concat(Stream.of(first), Stream.of(devices).filter(d -> d != first));
+    }
+
+    public static Boolean resolveTrueFalseAutoProperty(String propertyName, String propertyStr) {
+        if (propertyStr.equalsIgnoreCase("true")) {
+            return true;
+        }
+        if (propertyStr.equalsIgnoreCase("false")) {
+            return false;
+        }
+        if (!propertyStr.equalsIgnoreCase("auto")) {
+            if (log.isLoggable(PlatformLogger.Level.WARNING)) {
+                log.warning(String.format("Property %s must be one of true|false|auto, but '%s' provided instead - treating as 'auto'.", propertyName, propertyStr));
+            }
+        }
+        return null;
     }
 }

@@ -260,6 +260,7 @@
   develop(uintx, ObjArrayMarkingStride, 2048,                               \
           "Number of object array elements to push onto the marking stack " \
           "before pushing a continuation entry")                            \
+          range(1, INT_MAX/2)                                               \
                                                                             \
   product_pd(bool, NeverActAsServerClassMachine,                            \
           "Never act like a server-class machine")                          \
@@ -414,7 +415,7 @@
           "Initial ratio of young generation/survivor space size")          \
           range(3, max_uintx)                                               \
                                                                             \
-  product(bool, UseGCOverheadLimit, true,                                   \
+  product(bool, UseGCOverheadLimit, falseInDebug,                           \
           "Use policy to limit of proportion of time spent in GC "          \
           "before an OutOfMemory error is thrown")                          \
                                                                             \

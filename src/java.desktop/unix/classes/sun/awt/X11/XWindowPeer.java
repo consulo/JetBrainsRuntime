@@ -41,6 +41,8 @@ import sun.awt.IconInfo;
 import sun.awt.SunToolkit;
 import sun.awt.X11GraphicsDevice;
 import sun.awt.X11GraphicsEnvironment;
+import sun.java2d.BufferedSurfaceDataExt;
+import sun.java2d.SurfaceData;
 import sun.java2d.pipe.Region;
 import sun.util.logging.PlatformLogger;
 
@@ -1176,9 +1178,11 @@ class XWindowPeer extends XPanelPeer implements WindowPeer,
                 suppressWmTakeFocus(true);
             }
         }
-        updateFocusability();
-        promoteDefaultPosition();
         boolean refreshChildsTransientFor = isVisible() != vis;
+        if (refreshChildsTransientFor) {
+            updateFocusability();
+        }
+        promoteDefaultPosition();
         // To enable type-ahead for 'simple' windows, we initiate internal focus transfer to such a window even before
         // it's mapped by a window manager. 'Simple' windows aren't natively focusable, so for this to work as expected
         // we only need to be sure that the window will be mapped soon after we request it. There are known cases when
@@ -2520,7 +2524,12 @@ class XWindowPeer extends XPanelPeer implements WindowPeer,
 
     @Override
     public void updateWindow() {
-        // no-op
+        // In decorated frames, we use the surfaceData of the content window.
+        // For undecorated frames, getContentXWindow() is the same as `this`.
+        SurfaceData contentSurfaceData = ((XWindow) getContentXWindow()).getSurfaceData();
+        if (contentSurfaceData instanceof BufferedSurfaceDataExt csd) {
+            csd.commit();
+        }
     }
 
     boolean isTopMostWindow() {

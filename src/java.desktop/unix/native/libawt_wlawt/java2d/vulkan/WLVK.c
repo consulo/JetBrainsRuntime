@@ -29,6 +29,7 @@
 #include "VKEnv.h"
 #include "VKUtil.h"
 #include "VKSurfaceData.h"
+#include "sun_java2d_vulkan_WLVKWindowSurfaceData.h"
 
 #define PLATFORM_FUNCTION_TABLE(ENTRY, ...) \
 ENTRY(__VA_ARGS__, vkGetPhysicalDeviceWaylandPresentationSupportKHR); \
@@ -59,11 +60,11 @@ static VKPlatformData platformData = {
 
 /*
  * Class:     sun_java2d_vulkan_VKEnv
- * Method:    initPlatform
+ * Method:    initPlatformWayland
  * Signature: (J)[Lsun/java2d/vulkan/VKDevice;
  */
 JNIEXPORT jlong JNICALL
-Java_sun_java2d_vulkan_VKEnv_initPlatform(JNIEnv* env, jclass vkenv, jlong nativePtr) {
+Java_sun_java2d_vulkan_VKEnv_initPlatformWayland(JNIEnv* env, jclass vkenv, jlong nativePtr) {
     wl_display = jlong_to_ptr(nativePtr);
     return ptr_to_jlong(&platformData);
 }
@@ -83,7 +84,7 @@ static void WLVK_InitSurfaceData(VKWinSDOps* surface, void* data) {
     }
 }
 
-static void WLVK_OnSurfaceResize(VKWinSDOps* surface, VkExtent2D extent) {
+static void WLVK_OnSurfaceResize(VKWinSDOps* surface) {
     JNIEnv* env = JNU_GetEnv(jvm, JNI_VERSION_1_2);
     JNU_CallMethodByName(env, NULL, surface->vksdOps.sdOps.sdObject, "bufferAttached", "()V");
 }

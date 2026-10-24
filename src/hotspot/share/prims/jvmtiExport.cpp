@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -71,6 +71,7 @@
 #include "runtime/threadSMR.hpp"
 #include "runtime/vframe.inline.hpp"
 #include "runtime/vm_version.hpp"
+#include "utilities/events.hpp"
 #include "utilities/macros.hpp"
 
 #ifdef JVMTI_TRACE
@@ -420,6 +421,7 @@ JvmtiExport::get_jvmti_interface(JavaVM *jvm, void **penv, jint version) {
 JvmtiThreadState*
 JvmtiExport::get_jvmti_thread_state(JavaThread *thread, bool allow_suspend) {
   assert(thread == JavaThread::current(), "must be current thread");
+  assert(thread->thread_state() == _thread_in_vm, "thread should be in vm");
   if (thread->is_vthread_mounted() && thread->jvmti_thread_state() == nullptr) {
     JvmtiEventController::thread_started(thread);
     if (allow_suspend && thread->is_suspended()) {
@@ -626,22 +628,27 @@ JvmtiExport::decode_version_values(jint version, int * major, int * minor,
 }
 
 void JvmtiExport::enter_primordial_phase() {
+  Events::log(Thread::current_or_null(), "JVMTI - enter primordial phase");
   JvmtiEnvBase::set_phase(JVMTI_PHASE_PRIMORDIAL);
 }
 
 void JvmtiExport::enter_early_start_phase() {
+  Events::log(Thread::current_or_null(), "JVMTI - enter early start phase");
   set_early_vmstart_recorded(true);
 }
 
 void JvmtiExport::enter_start_phase() {
+  Events::log(Thread::current_or_null(), "JVMTI - enter start phase");
   JvmtiEnvBase::set_phase(JVMTI_PHASE_START);
 }
 
 void JvmtiExport::enter_onload_phase() {
+  Events::log(Thread::current_or_null(), "JVMTI - enter onload phase");
   JvmtiEnvBase::set_phase(JVMTI_PHASE_ONLOAD);
 }
 
 void JvmtiExport::enter_live_phase() {
+  Events::log(Thread::current_or_null(), "JVMTI - enter live phase");
   JvmtiEnvBase::set_phase(JVMTI_PHASE_LIVE);
 }
 
@@ -779,6 +786,7 @@ void JvmtiExport::post_vm_death() {
     }
   }
 
+  Events::log(Thread::current_or_null(), "JVMTI - enter dead phase");
   JvmtiEnvBase::set_phase(JVMTI_PHASE_DEAD);
   JvmtiEventController::vm_death();
 }
@@ -1371,6 +1379,26 @@ bool JvmtiExport::hide_single_stepping(JavaThread *thread) {
   }
 }
 
+bool JvmtiExport::has_frame_pop_for_top_frame(JavaThread *current) {
+  assert(current == JavaThread::current(), "must be");
+  JvmtiThreadState *state = current->jvmti_thread_state();
+  if (state == nullptr || !state->is_enabled(JVMTI_EVENT_FRAME_POP)) {
+    return false;
+  }
+  if (state->frame_pop_cnt() == 0) {
+    return false;
+  }
+  JvmtiEnvThreadStateIterator it(state);
+  int top_frame_num = state->count_frames();
+  for (JvmtiEnvThreadState* ets = it.first(); ets != nullptr; ets = it.next(ets)) {
+    if (ets->has_frame_pops() && ets->is_frame_pop(top_frame_num)) {
+      assert(ets->is_enabled(JVMTI_EVENT_FRAME_POP), "sanity check");
+      return true;
+    }
+  }
+  return false;
+}
+
 void JvmtiExport::post_class_load(JavaThread *thread, Klass* klass) {
   if (JvmtiEnv::get_phase() < JVMTI_PHASE_PRIMORDIAL) {
     return;
@@ -1726,6 +1754,23 @@ void JvmtiExport::post_vthread_unmount(jobject vthread) {
   }
 }
 
+bool JvmtiExport::has_frame_pops(JavaThread* thread) {
+  if (!can_post_frame_pop()) {
+    return false;
+  }
+  JvmtiThreadState *state = get_jvmti_thread_state(thread);
+  if (state == nullptr) {
+    return false;
+  }
+  JvmtiEnvThreadStateIterator it(state);
+  for (JvmtiEnvThreadState* ets = it.first(); ets != nullptr; ets = it.next(ets)) {
+    if (ets->has_frame_pops()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void JvmtiExport::continuation_yield_cleanup(JavaThread* thread, jint continuation_frame_count) {
   if (JvmtiEnv::get_phase() < JVMTI_PHASE_PRIMORDIAL) {
     return;
@@ -1863,54 +1908,51 @@ void JvmtiExport::post_method_entry(JavaThread *thread, Method* method, frame cu
 }
 
 void JvmtiExport::post_method_exit(JavaThread* thread, Method* method, frame current_frame) {
+  // At this point we only have the address of a "raw result" and
+  // we just call into the interpreter to convert this into a jvalue.
+  // This method always makes transition to vm and back where GC can happen.
+  // So it is needed to preserve result and then restore it
+  // even if events are not actually posted.
+  // Saving oop_result into value.j is deferred until jvmti state is ready.
   HandleMark hm(thread);
   methodHandle mh(thread, method);
-
-  JvmtiThreadState *state = get_jvmti_thread_state(thread);
-
-  if (state == nullptr || !state->is_interp_only_mode()) {
-    // for any thread that actually wants method exit, interp_only_mode is set
-    return;
-  }
-
-  // return a flag when a method terminates by throwing an exception
-  // i.e. if an exception is thrown and it's not caught by the current method
-  bool exception_exit = state->is_exception_detected() && !state->is_exception_caught();
   Handle result;
+  oop oop_result;
   jvalue value;
   value.j = 0L;
-
-  if (state->is_enabled(JVMTI_EVENT_METHOD_EXIT)) {
-    // if the method hasn't been popped because of an exception then we populate
-    // the return_value parameter for the callback. At this point we only have
-    // the address of a "raw result" and we just call into the interpreter to
-    // convert this into a jvalue.
-    if (!exception_exit) {
-      oop oop_result;
-      BasicType type = current_frame.interpreter_frame_result(&oop_result, &value);
-      if (is_reference_type(type)) {
-        result = Handle(thread, oop_result);
-        value.l = JNIHandles::make_local(thread, result());
-      }
-    }
+  BasicType type = current_frame.interpreter_frame_result(&oop_result, &value);
+  assert(mh->is_native() || type == T_VOID || current_frame.interpreter_frame_expression_stack_size() > 0,
+         "Stack shouldn't be empty");
+  if (is_reference_type(type)) {
+    result = Handle(thread, oop_result);
   }
-
-  // Do not allow NotifyFramePop to add new FramePop event request at
-  // depth 0 as it is already late in the method exiting dance.
-  state->set_top_frame_is_exiting();
-
-  // Deferred transition to VM, so we can stash away the return oop before GC
-  // Note that this transition is not needed when throwing an exception, because
-  // there is no oop to retain.
+  JvmtiThreadState* state; // should be initialized in vm state only
   JavaThread* current = thread; // for JRT_BLOCK
+
   JRT_BLOCK
-    post_method_exit_inner(thread, mh, state, exception_exit, current_frame, value);
+    bool interp_only = thread->is_interp_only_mode();
+    // Avoid calls to get_jvmti_thread_state if is_interp_only_mode was not enabled.
+    state = interp_only ? get_jvmti_thread_state(thread) : thread->jvmti_thread_state();
+    if (state != nullptr) {
+      if (interp_only && state->is_enabled(JVMTI_EVENT_METHOD_EXIT)) {
+        // Deferred saving Object result into value.
+        if (is_reference_type(type)) {
+          value.l = JNIHandles::make_local(thread, result());
+        }
+      }
+
+      // Do not allow NotifyFramePop to add new FramePop event request at
+      // depth 0 as it is already late in the method exiting dance.
+      state->set_top_frame_is_exiting();
+
+      post_method_exit_inner(thread, mh, state, false /* not exception exit */, current_frame, value);
+    }
   JRT_BLOCK_END
-
-  // The JRT_BLOCK_END can safepoint in ThreadInVMfromJava desctructor. Now it is safe to allow
-  // adding FramePop event requests as no safepoint can happen before removing activation.
-  state->clr_top_frame_is_exiting();
-
+  if (state != nullptr) {
+    // The JRT_BLOCK_END can safepoint in ThreadInVMfromJava destructor. Now it is safe to allow
+    // adding FramePop event requests as no safepoint can happen before removing activation.
+    state->clr_top_frame_is_exiting();
+  }
   if (result.not_null() && !mh->is_native()) {
     // We have to restore the oop on the stack for interpreter frames
     *(oop*)current_frame.interpreter_frame_tos_address() = result();
@@ -1932,7 +1974,8 @@ void JvmtiExport::post_method_exit_inner(JavaThread* thread,
                                            (mh() == nullptr) ? "null" : mh()->klass_name()->as_C_string(),
                                            (mh() == nullptr) ? "null" : mh()->name()->as_C_string() ));
 
-  if (state->is_enabled(JVMTI_EVENT_METHOD_EXIT)) {
+  // Need to check is_interp_only_mode to consistently post method exit event for all frames.
+  if (thread->is_interp_only_mode() && state->is_enabled(JVMTI_EVENT_METHOD_EXIT)) {
     JvmtiEnvThreadStateIterator it(state);
     for (JvmtiEnvThreadState* ets = it.first(); ets != nullptr; ets = it.next(ets)) {
       if (ets->is_enabled(JVMTI_EVENT_METHOD_EXIT)) {
@@ -2143,21 +2186,14 @@ void JvmtiExport::notice_unwind_due_to_exception(JavaThread *thread, Method* met
 
   if (state->is_exception_detected()) {
 
+    // The cached cur_stack_depth might have changed from the operations of frame pop or method exit.
+    // We are not 100% sure the cached cur_stack_depth is still valid depth so invalidate it.
     state->invalidate_cur_stack_depth();
     if (!in_handler_frame) {
       // Not in exception handler.
-      if(state->is_interp_only_mode()) {
-        // method exit and frame pop events are posted only in interp mode.
-        // When these events are enabled code should be in running in interp mode.
-        jvalue no_value;
-        no_value.j = 0L;
-        JvmtiExport::post_method_exit_inner(thread, mh, state, true, thread->last_frame(), no_value);
-        // The cached cur_stack_depth might have changed from the
-        // operations of frame pop or method exit. We are not 100% sure
-        // the cached cur_stack_depth is still valid depth so invalidate
-        // it.
-        state->invalidate_cur_stack_depth();
-      }
+      jvalue no_value;
+      no_value.j = 0L;
+      JvmtiExport::post_method_exit_inner(thread, mh, state, true, thread->last_frame(), no_value);
     } else {
       // In exception handler frame. Report exception catch.
       assert(location != nullptr, "must be a known location");

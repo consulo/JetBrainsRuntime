@@ -59,7 +59,7 @@ on:
 jobs:
   build-linux:
     name: build
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     container:
       image: alpine:3.20
 
@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: 'Checkout the JDK source'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 'Install toolchain and dependencies'
         run: |

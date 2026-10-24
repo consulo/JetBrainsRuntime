@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2014, 2025, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2014, 2026, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # This code is free software; you can redistribute it and/or modify it
@@ -163,9 +163,10 @@ endif
 JDK_LICENSE ?= $(wildcard $(TOPDIR)/LICENSE)
 JDK_NOTICE  ?= $(wildcard $(TOPDIR)/ASSEMBLY_EXCEPTION)
 JDK_ADDITIONAL_LICENSE_INFO  ?= $(wildcard $(TOPDIR)/ADDITIONAL_LICENSE_INFO)
+JDK_README_JAVASE ?= $(wildcard $(TOPDIR)/README.JAVASE)
 
 $(eval $(call SetupCopyFiles, COPY_JDK_NOTICES, \
-    FILES := $(JDK_LICENSE) $(JDK_NOTICE) $(JDK_ADDITIONAL_LICENSE_INFO), \
+    FILES := $(JDK_LICENSE) $(JDK_NOTICE) $(JDK_ADDITIONAL_LICENSE_INFO) $(JDK_README_JAVASE), \
     DEST := $(COMMON_LEGAL_DST_DIR), \
     FLATTEN := true, \
 ))
@@ -179,6 +180,10 @@ TARGETS += $(COPY_JDK_NOTICES)
 #
 ifeq ($(USE_EXTERNAL_LIBZ), true)
   LEGAL_EXCLUDES += zlib.md
+endif
+
+ifneq ($(TOOLCHAIN_TYPE), gcc)
+  LEGAL_EXCLUDES += gcc.md
 endif
 
 $(eval $(call SetupCopyLegalFiles, COPY_LEGAL, \

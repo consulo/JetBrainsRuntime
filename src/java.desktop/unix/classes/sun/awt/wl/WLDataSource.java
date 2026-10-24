@@ -25,22 +25,20 @@
 
 package sun.awt.wl;
 
+import sun.util.logging.PlatformLogger;
+
 import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.datatransfer.Transferable;
 import java.awt.image.BufferedImage;
 import java.util.LinkedHashSet;
-import java.util.UUID;
 
 public class WLDataSource {
-    // nativePtr will be reset to 0 after this object receives a "cancelled" event, and is destroyed.
-    // Reading from nativePtr doesn't need to be synchronized for methods that happen before announcing
-    // this object as a selection, or a drag-and-drop source.
+    protected static final PlatformLogger log = PlatformLogger.getLogger("sun.awt.wl.WLDataSource");
+
     private long nativePtr;
 
     private final Transferable data;
-
-    private final String mimeTypeCookie;
 
     private final boolean anyMimesAnnounced;
 
@@ -54,13 +52,25 @@ public class WLDataSource {
 
     private static native void setDnDIconImpl(long nativePtr, int scale, int width, int height, int offsetX, int offsetY, int[] pixels);
 
+    @Override
+    public String toString() {
+        return "WLDataSource{" +
+                "nativePtr=0x" + Long.toHexString(nativePtr) +
+                ", data=" + data +
+                ", anyMimesAnnounced=" + anyMimesAnnounced +
+                '}';
+    }
+
+    public String getID() {
+        return "0x" + Long.toHexString(nativePtr);
+    }
+
     WLDataSource(WLDataDevice dataDevice, int protocol, Transferable data) {
         var wlDataTransferer = (WLDataTransferer) WLDataTransferer.getInstance();
 
         nativePtr = initNative(dataDevice.getNativePtr(), protocol);
         assert nativePtr != 0 : "Failed to initialize the native part of the source"; // should've already thrown in native
         this.data = data;
-        this.mimeTypeCookie = "JAVA_DATATRANSFER_COOKIE_" + UUID.randomUUID();
         boolean anyMimesAnnounced = false;
 
         try {
@@ -82,7 +92,6 @@ public class WLDataSource {
                     }
                 }
 
-                mimes.add(mimeTypeCookie);
                 for (var mime : mimes) {
                     offerMimeImpl(nativePtr, mime);
                 }
@@ -102,10 +111,6 @@ public class WLDataSource {
         return nativePtr;
     }
 
-    public String getMimeTypeCookie() {
-        return mimeTypeCookie;
-    }
-
     public Transferable getData() {
         return data;
     }
@@ -114,16 +119,9 @@ public class WLDataSource {
         return anyMimesAnnounced;
     }
 
-    public boolean isSourceFor(WLDataOffer offer) {
-        if (offer == null) {
-            return false;
-        }
-
-        return offer.getMimes().contains(mimeTypeCookie);
-    }
-
     // This method can only be called once before setting this object as a drag-and-drop source
     public void setDnDActions(int actions) {
+        log.fine("setDnDActions(), this = " + getID() + ", actions = " + actions);
         if (nativePtr == 0) {
             throw new IllegalStateException("Native pointer is null");
         }
@@ -131,52 +129,86 @@ public class WLDataSource {
     }
 
     public void setDnDIcon(Image image, int scale, int offsetX, int offsetY) {
+        log.fine("setDnDIcon(), this = " + getID() + ", image = " + image + ", scale = " + scale + ", offsetX = " + offsetX + ", offsetY = " + offsetY);
         if (nativePtr == 0) {
             throw new IllegalStateException("Native pointer is null");
         }
 
+        if (scale <= 0) {
+            throw new IllegalArgumentException("Scale must be positive");
+        }
+
         int width = image.getWidth(null);
         int height = image.getHeight(null);
+
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+
+        width = (width + scale - 1) / scale * scale;
+        height = (height + scale - 1) / scale * scale;
+
         int[] pixels = new int[width * height];
 
-        if (image instanceof BufferedImage) {
-            // NOTE: no need to ensure that the BufferedImage is TYPE_INT_ARGB,
-            // getRGB() does pixel format conversion automatically
-            ((BufferedImage) image).getRGB(0, 0, width, height, pixels, 0, width);
-        } else {
-            BufferedImage bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-            Graphics2D g = bufferedImage.createGraphics();
-            g.drawImage(image, 0, 0, null);
-            g.dispose();
+        BufferedImage bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = bufferedImage.createGraphics();
+        g.drawImage(image, 0, 0, null);
+        g.dispose();
 
-            bufferedImage.getRGB(0, 0, width, height, pixels, 0, width);
-        }
+        bufferedImage.getRGB(0, 0, width, height, pixels, 0, width);
 
         setDnDIconImpl(nativePtr, scale, width, height, offsetX, offsetY, pixels);
     }
 
-    public synchronized void destroy() {
+    // externally synchronized, only call from one thread at a time (e.g. by holding a lock)
+    // destroy all references to this object after this method returns
+    public void destroy() {
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("destroy(), this = " + getID());
+        }
         if (nativePtr != 0) {
             destroyImpl(nativePtr);
             nativePtr = 0;
         }
     }
 
-    // Event handlers, called from native code on the data transferer dispatch thread
+    // Event handlers, called from native code on the data source dispatch thread
 
     protected void handleSend(String mime, int fd) {
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("handleSend(), this = " + getID() + ", mime = " + mime + ", fd = " + fd);
+        }
         WLDataDevice.transferContentsWithType(data, mime, fd);
     }
 
     protected void handleCancelled() {
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("handleCancelled(), this = " + getID());
+        }
         destroy();
     }
 
-    protected void handleTargetAcceptsMime(String mime) {}
+    protected void handleTargetAcceptsMime(String mime) {
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("handleTargetAcceptsMime(), this = " + getID());
+        }
+    }
 
-    protected void handleDnDDropPerformed() {}
+    protected void handleDnDDropPerformed() {
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("handleDnDDropPerformed(), this = " + getID());
+        }
+    }
 
-    protected void handleDnDFinished() {}
+    protected void handleDnDFinished() {
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("handleDnDFinished(), this = " + getID());
+        }
+    }
 
-    protected void handleDnDAction(int action) {}
+    protected void handleDnDAction(int action) {
+        if (log.isLoggable(PlatformLogger.Level.FINE)) {
+            log.fine("handleDnDAction(), this = " + getID() + ", action = " + action);
+        }
+    }
 }

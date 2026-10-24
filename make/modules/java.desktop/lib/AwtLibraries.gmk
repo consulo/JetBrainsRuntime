@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2011, 2025, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2011, 2026, Oracle and/or its affiliates. All rights reserved.
 # DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 #
 # This code is free software; you can redistribute it and/or modify it
@@ -102,6 +102,10 @@ ifeq ($(DBUS_FOUND), true)
   LIBAWT_CFLAGS += -DDBUS_FOUND
 endif
 
+ifeq ($(ENABLE_HEADLESS_ONLY), true)
+  LIBAWT_CFLAGS += -DHEADLESS
+endif
+
 ifeq ($(call isTargetOs, windows), true)
   LIBAWT_CFLAGS += -EHsc -DUNICODE -D_UNICODE -DMLIB_OS64BIT
   LIBAWT_RCFLAGS ?= -I$(TOPDIR)/src/java.base/windows/native/launcher/icons
@@ -150,6 +154,16 @@ ifeq ($(call isTargetOs, windows), true)
   LIBAWT_CFLAGS += $(A11Y_JAWS_ANNOUNCING_CFLAGS)
 endif
 
+# Setup speech-dispatcher a11y announcer for Linux XAWT/WLAWT
+A11Y_SPEECHD_ANNOUNCING_CFLAGS := -DNO_A11Y_SPEECHD_ANNOUNCING
+ifeq ($(call isTargetOs, linux), true)
+  A11Y_SPEECHD_ANNOUNCING_CFLAGS := $(SPEECHD_CFLAGS) -DNO_A11Y_SPEECHD_ANNOUNCING
+
+  ifeq ($(A11Y_SPEECHD_ANNOUNCING_ENABLED), true)
+    A11Y_SPEECHD_ANNOUNCING_CFLAGS := $(SPEECHD_CFLAGS)
+  endif
+endif
+
 # Setup Vulkan
 ifeq ($(VULKAN_ENABLED), true)
   LIBAWT_EXTRA_SRC += common/font common/java2d/vulkan
@@ -167,6 +181,7 @@ $(eval $(call SetupJdkLibrary, BUILD_LIBAWT, \
     NAME := awt, \
     EXTRA_SRC := $(LIBAWT_EXTRA_SRC), \
     EXTRA_FILES := $(LIBAWT_EXTRA_FILES), \
+    EXCLUDES := $(VULKAN_EXCLUDES), \
     EXCLUDE_FILES := $(LIBAWT_EXCLUDE_FILES), \
     OPTIMIZATION := HIGHEST, \
     CFLAGS := $(LIBAWT_CFLAGS) $(X_CFLAGS) $(DBUS_CFLAGS), \
@@ -226,22 +241,27 @@ endif
 # Compile Vulkan shaders
 define compile-spirv
   $(call MakeTargetDir)
-  $(VULKAN_SHADER_COMPILER) -D$(call uppercase,$(patsubst .%,STAGE_%,$(suffix $<))) -o '$(call DecodeSpace, $@)' '$(call DecodeSpace, $<)'
+  $(VULKAN_SHADER_COMPILER) -D$(call uppercase,$(patsubst .%,STAGE_%,$(suffix $<))) -o '$(call FixPath,$(call DecodeSpace,$@))' '$(call FixPath,$(call DecodeSpace,$<))'
 endef
 spirv-name = $(strip $1).h
 
 ifeq ($(VULKAN_ENABLED), true)
+  VULKAN_SHADER_SRC_DIR := $(TOPDIR)/src/$(MODULE)/share/glsl/vulkan
   $(eval $(call SetupCopyFiles, COMPILE_VULKAN_SHADERS, \
-      SRC := $(TOPDIR)/src/$(MODULE)/share/glsl/vulkan, \
-      FILES := $(filter-out %.glsl, $(call FindFiles, $(TOPDIR)/src/$(MODULE)/share/glsl/vulkan)), \
+      SRC := $(VULKAN_SHADER_SRC_DIR), \
+      FILES := $(filter-out %.glsl, $(call FindFiles, $(VULKAN_SHADER_SRC_DIR))), \
       DEST := $(SUPPORT_OUTPUTDIR)/headers/java.desktop/vulkan/spirv, \
       MACRO := compile-spirv, \
       NAME_MACRO := spirv-name, \
   ))
+
+  # Every shader also depends on every *.glsl include unconditionally; much easier to implement than -MD support.
+  $(COMPILE_VULKAN_SHADERS): $(filter %.glsl, $(call FindFiles, $(VULKAN_SHADER_SRC_DIR)))
+
   VULKAN_SHADER_LIST = $(SUPPORT_OUTPUTDIR)/headers/java.desktop/vulkan/shader_list.h
   $(VULKAN_SHADER_LIST): $(COMPILE_VULKAN_SHADERS)
 	> $(VULKAN_SHADER_LIST) $(NEWLINE) \
-	$(foreach f, $(patsubst $(TOPDIR)/src/$(MODULE)/share/glsl/vulkan/%,%,$(filter-out %.glsl, $(call FindFiles, $(TOPDIR)/src/$(MODULE)/share/glsl/vulkan))), \
+	$(foreach f, $(patsubst $(VULKAN_SHADER_SRC_DIR)/%,%,$(filter-out %.glsl, $(call FindFiles, $(VULKAN_SHADER_SRC_DIR)))), \
 	$(ECHO) SHADER_ENTRY\($(subst .,$(COMMA),$(subst /,_,$f))\) >> $(VULKAN_SHADER_LIST) $(NEWLINE) \
 	$(ECHO) '#ifdef INCLUDE_BYTECODE' >> $(VULKAN_SHADER_LIST) $(NEWLINE) \
 	$(ECHO) '#include "spirv/$f.h"' >> $(VULKAN_SHADER_LIST) $(NEWLINE) \
@@ -268,13 +288,17 @@ ifeq ($(call isTargetOs, windows macosx), false)
   LIBAWT_HEADLESS_EXCLUDE_FILES := \
       screencast_pipewire.c \
       screencast_portal.c \
+      GLXGraphicsConfig.c \
+      GLXSurfaceData.c \
+      X11PMBlitLoops.c \
+      X11Renderer.c \
+      X11SurfaceData.c \
       #
 
   LIBAWT_HEADLESS_EXTRA_HEADER_DIRS := \
       $(LIBAWT_DEFAULT_HEADER_DIRS) \
       common/awt/debug \
       common/font \
-      common/java2d/opengl \
       java.base:libjvm \
       #
 
@@ -294,7 +318,7 @@ ifeq ($(call isTargetOs, windows macosx), false)
   $(eval $(call SetupJdkLibrary, BUILD_LIBAWT_HEADLESS, \
       NAME := awt_headless, \
       EXTRA_SRC := $(LIBAWT_HEADLESS_EXTRA_SRC), \
-      EXCLUDES := medialib wl $(VULKAN_EXCLUDES), \
+      EXCLUDES := medialib opengl wl $(VULKAN_EXCLUDES), \
       EXCLUDE_FILES := $(LIBAWT_HEADLESS_EXCLUDE_FILES), \
       ONLY_EXPORTED := $(LIBAWT_HEADLESS_ONLY_EXPORTED), \
       OPTIMIZATION := LOW, \
@@ -325,21 +349,10 @@ ifeq ($(call isTargetOs, windows macosx)+$(ENABLE_HEADLESS_ONLY), false+false)
       common/awt \
       common/java2d \
       common/font \
+      common/accessibility/AccessibleAnnouncer \
       #
 
-  ifeq ($(A11Y_SPEECHD_ANNOUNCING_ENABLED), true)
-      A11Y_SPEECHD_ANNOUNCING_CFLAGS :=
-  else
-      A11Y_SPEECHD_ANNOUNCING_CFLAGS := -DNO_A11Y_SPEECHD_ANNOUNCING
-  endif
-
-  ifeq ($(call isTargetOs, linux), true)
-      LIBAWT_XAWT_EXTRA_SRC += \
-          $(TOPDIR)/src/$(MODULE)/linux/native/libawt_xawt \
-          #
-  endif
-
-  LIBAWT_XAWT_CFLAGS += $(SPEECHD_CFLAGS) $(A11Y_SPEECHD_ANNOUNCING_CFLAGS)
+  LIBAWT_XAWT_CFLAGS += $(A11Y_SPEECHD_ANNOUNCING_CFLAGS) $(VULKAN_FLAGS)
 
   LIBAWT_XAWT_EXTRA_HEADER_DIRS := \
       $(LIBAWT_DEFAULT_HEADER_DIRS) \
@@ -350,6 +363,7 @@ ifeq ($(call isTargetOs, windows macosx)+$(ENABLE_HEADLESS_ONLY), false+false)
       common/awt/systemscale \
       common/font \
       common/java2d/opengl \
+      common/java2d/vulkan \
       common/java2d/x11 \
       java.base:libjvm \
       #
@@ -438,6 +452,7 @@ ifeq ($(call isTargetOs, windows macosx), false)
         common/font \
         common/wayland \
         $(SUPPORT_OUTPUTDIR)/gensrc/java.desktop/wayland \
+        common/accessibility/AccessibleAnnouncer \
         #
 
     LIBAWT_WLAWT_EXCLUDES := medialib debug opengl x11 $(VULKAN_EXCLUDES)
@@ -471,7 +486,8 @@ ifeq ($(call isTargetOs, windows macosx), false)
         $(VULKAN_FLAGS) \
         $(WAYLAND_CFLAGS) \
         $(CUPS_CFLAGS) \
-        $(DBUS_CFLAGS)
+        $(DBUS_CFLAGS) \
+        $(A11Y_SPEECHD_ANNOUNCING_CFLAGS)
 
     ifeq ($(TOOLCHAIN_TYPE), gcc)
       # Turn off all warnings for the following files since they contain warnings
@@ -636,6 +652,9 @@ ifeq ($(call isTargetOs, macosx), true)
 endif
 
 ifeq ($(call isTargetOs, linux)+$(ENABLE_HEADLESS_ONLY), true+true)
+  LIBJAWT_CFLAGS += -DHEADLESS
+endif
+ifeq ($(call isTargetOs, aix)+$(ENABLE_HEADLESS_ONLY), true+true)
   LIBJAWT_CFLAGS += -DHEADLESS
 endif
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -51,6 +51,7 @@
 Array<ClassPathZipEntry*>* AOTClassLocationConfig::_dumptime_jar_files = nullptr;
 AOTClassLocationConfig* AOTClassLocationConfig::_dumptime_instance = nullptr;
 const AOTClassLocationConfig* AOTClassLocationConfig::_runtime_instance = nullptr;
+const char* AOTClassLocationConfig::_runtime_lcp = nullptr;
 
 // A ClassLocationStream represents a list of code locations, which can be iterated using
 // start() and has_next().
@@ -432,7 +433,8 @@ bool AOTClassLocation::check(const char* runtime_path, bool has_aot_linked_class
     bool size_differs = _filesize != st.st_size;
     bool time_differs = _check_time && (_timestamp != st.st_mtime);
     if (size_differs || time_differs) {
-      aot_log_warning(aot)("This file is not the one used while building the shared archive file: '%s'%s%s",
+      aot_log_warning(aot)("This file is not the one used while building the %s: '%s'%s%s",
+                       CDSConfig::type_of_archive_being_loaded(),
                        runtime_path,
                        time_differs ? ", timestamp has changed" : "",
                        size_differs ? ", size has changed" : "");
@@ -453,6 +455,13 @@ void AOTClassLocationConfig::dumptime_init(JavaThread* current) {
     // shouldn't happen this early in bootstrap.
     java_lang_Throwable::print(current->pending_exception(), tty);
     vm_exit_during_initialization("AOTClassLocationConfig::dumptime_init_helper() failed unexpectedly");
+  }
+
+  if (CDSConfig::is_dumping_final_static_archive()) {
+    // The _max_used_index is usually updated by ClassLoader::record_result(). However,
+    // when dumping the final archive, the classes are loaded from their images in
+    // the AOT config file, so we don't go through ClassLoader::record_result().
+    dumptime_update_max_used_index(runtime()->_max_used_index); // Same value as recorded in the training run.
   }
 }
 
@@ -965,6 +974,25 @@ bool AOTClassLocationConfig::need_lcp_match_helper(int start, int end, ClassLoca
   return true;
 }
 
+void AOTClassLocationConfig::set_runtime_lcp(const char* lcp) {
+  if (_runtime_lcp != nullptr) {
+    os::free((void*) _runtime_lcp);
+    _runtime_lcp = nullptr;
+  }
+  if (lcp != nullptr) {
+    _runtime_lcp = os::strdup(lcp, mtClassShared);
+  }
+}
+
+const char* AOTClassLocationConfig::runtime_path(int index) const {
+  const char* path = class_location_at(index)->path();
+  if (_runtime_lcp != nullptr && index >= boot_cp_start_index() && index < app_cp_end_index()) {
+    // Apply validated LCP substitution.
+    return substitute(path, _dumptime_lcp_len, _runtime_lcp, strlen(_runtime_lcp));
+  }
+  return path;
+}
+
 bool AOTClassLocationConfig::validate(const char* cache_filename, bool has_aot_linked_classes, bool* has_extra_module_paths) const {
   ResourceMark rm;
   AllClassLocationStreams all_css;
@@ -983,6 +1011,9 @@ bool AOTClassLocationConfig::validate(const char* cache_filename, bool has_aot_l
       *has_extra_module_paths = true;
     } else {
       *has_extra_module_paths = false;
+    }
+    if (success) {
+      set_runtime_lcp(nullptr);
     }
   } else {
     bool use_lcp_match = need_lcp_match(all_css);
@@ -1014,6 +1045,11 @@ bool AOTClassLocationConfig::validate(const char* cache_filename, bool has_aot_l
                                    all_css.module_path(), has_extra_module_paths);
       log_info(class, path)("Archived module path validation: %s%s", success ? "passed" : "failed",
                             (*has_extra_module_paths) ? " (extra module paths found)" : "");
+    }
+
+    if (success) {
+      bool lcp_was_used = use_lcp_match && runtime_lcp_len > 0 && _dumptime_lcp_len > 0;
+      set_runtime_lcp(lcp_was_used ? runtime_lcp : nullptr);
     }
 
     if (runtime_lcp_len > 0) {

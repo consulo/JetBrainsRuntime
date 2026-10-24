@@ -60,12 +60,14 @@ struct VKEnv {
 
     VKPlatformData* platformData;
     VkBool32 presentationSupported;
+    VkBool32 surfaceMaintenance1Supported;
 
     INSTANCE_FUNCTION_TABLE(DECL_PFN)
     SURFACE_INSTANCE_FUNCTION_TABLE(DECL_PFN)
+    GET_SURFACE_CAPABILITIES_2_INSTANCE_FUNCTION_TABLE(DECL_PFN)
     DEBUG_INSTANCE_FUNCTION_TABLE(DECL_PFN)
 };
 
-VKEnv* VKEnv_GetInstance();
+JNIEXPORT VKEnv* VKEnv_GetInstance();
 
 #endif //VKEnv_h_Included

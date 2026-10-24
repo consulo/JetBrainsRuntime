@@ -97,6 +97,7 @@ BOOL isWindowAnimationEnabled() {
 - (void)setIgnoreMove:(BOOL)value;
 - (BOOL)isIgnoreMove;
 - (void)_adjustWindowToScreen;
+- (void)setContentHidden:(BOOL)hidden;
 @end
 
 // Cocoa windowDidBecomeKey/windowDidResignKey notifications
@@ -388,7 +389,12 @@ AWT_NS_WINDOW_IMPLEMENTATION
 }
 
 - (void)orderOut:(id)sender {
+    // JBR-2893 Big Sur: IDEA hangs after closing a project tab after exiting and entering full screen
     ignoreResizeWindowDuringAnotherWindowEnd = YES;
+#ifdef DEBUG
+    NSLog(@"AWTWindow.orderOut: ignoreResizeWindowDuringAnotherWindowEnd = %d",
+          ignoreResizeWindowDuringAnotherWindowEnd);
+#endif
     [super orderOut:sender];
 }
 
@@ -435,6 +441,14 @@ AWT_NS_WINDOW_IMPLEMENTATION
 }
 
 @end
+
+@implementation NSWindow (Private)
+- (void)setContentHidden:(BOOL)hidden {
+    [self.contentView setHidden:hidden];
+    [self setIgnoresMouseEvents:hidden];
+}
+@end
+
 @implementation AWTWindow_Panel
 AWT_NS_WINDOW_IMPLEMENTATION
 @end
@@ -458,6 +472,7 @@ AWT_NS_WINDOW_IMPLEMENTATION
 @synthesize isJustCreated;
 @synthesize javaWindowTabbingMode;
 @synthesize isEnterFullScreen;
+@synthesize isResizeWindowDuringAnotherWindowEndScheduled;
 @synthesize hideTabController;
 
 - (void) updateMinMaxSize:(BOOL)resizable {
@@ -644,6 +659,7 @@ AWT_ASSERT_APPKIT_THREAD;
     self.javaWindowTabbingMode = [self getJavaWindowTabbingMode];
     self.nsWindow.collectionBehavior = NSWindowCollectionBehaviorManaged;
     self.isEnterFullScreen = NO;
+    self.isResizeWindowDuringAnotherWindowEndScheduled = NO;
 
     [self configureJavaWindowTabbingIdentifier];
 
@@ -661,6 +677,7 @@ AWT_ASSERT_APPKIT_THREAD;
 
 // returns id for the topmost window under mouse
 + (NSInteger) getTopmostWindowUnderMouseID {
+    // May be blocking thread (appkit wait on window server)
     return [NSWindow windowNumberAtPoint:[NSEvent mouseLocation] belowWindowWithWindowNumber:kCGNullWindowID];
 }
 
@@ -757,11 +774,9 @@ AWT_ASSERT_APPKIT_THREAD;
 }
 
 + (AWTWindow *) getTopmostWindowUnderMouse {
+    NSInteger topmostWindowUnderMouseID = [AWTWindow getTopmostWindowUnderMouseID];
     NSEnumerator *windowEnumerator = [[NSApp windows] objectEnumerator];
     NSWindow *window;
-
-    NSInteger topmostWindowUnderMouseID = [AWTWindow getTopmostWindowUnderMouseID];
-
     while ((window = [windowEnumerator nextObject]) != nil) {
         if ([window windowNumber] == topmostWindowUnderMouseID) {
             BOOL isAWTWindow = [AWTWindow isAWTWindow: window];
@@ -1038,9 +1053,15 @@ AWT_ASSERT_APPKIT_THREAD;
     }
     GET_CPLATFORM_WINDOW_CLASS();
     DECLARE_METHOD(jm_displayChanged, jc_CPlatformWindow, "displayChanged", "(Z)V");
-    (*env)->CallVoidMethod(env, platformWindow, jm_displayChanged, profileOnly);
-    CHECK_EXCEPTION();
-    (*env)->DeleteLocalRef(env, platformWindow);
+    @try {
+        (*env)->CallVoidMethod(env, platformWindow, jm_displayChanged, profileOnly);
+        (*env)->DeleteLocalRef(env, platformWindow);
+        CHECK_EXCEPTION();
+    } @catch (NSException *e) {
+        NSLog(@"WARNING: suppressed exception from CPlatformWindow.displayChanged() in [AWTWindow _displayChanged]");
+        NSProcessInfo *processInfo = [NSProcessInfo processInfo];
+        [NSApplicationAWT logException:e forProcess:processInfo];
+    }
 }
 
 - (void) _deliverMoveResizeEvent {
@@ -1068,15 +1089,20 @@ AWT_ASSERT_APPKIT_THREAD;
 
     GET_CPLATFORM_WINDOW_CLASS();
     DECLARE_METHOD(jm_deliverMoveResizeEvent, jc_CPlatformWindow, "deliverMoveResizeEvent", "(IIIIZ)V");
-    (*env)->CallVoidMethod(env, platformWindow, jm_deliverMoveResizeEvent,
-                      (jint)frame.origin.x,
-                      (jint)frame.origin.y,
-                      (jint)frame.size.width,
-                      (jint)frame.size.height,
-                      (jboolean)[self.nsWindow inLiveResize]);
-    CHECK_EXCEPTION();
-    (*env)->DeleteLocalRef(env, platformWindow);
-
+    @try {
+        (*env)->CallVoidMethod(env, platformWindow, jm_deliverMoveResizeEvent,
+                          (jint)frame.origin.x,
+                          (jint)frame.origin.y,
+                          (jint)frame.size.width,
+                          (jint)frame.size.height,
+                          (jboolean)[self.nsWindow inLiveResize]);
+        (*env)->DeleteLocalRef(env, platformWindow);
+        CHECK_EXCEPTION();
+    } @catch (NSException *e) {
+        NSLog(@"WARNING: suppressed exception from CPlatformWindow.deliverMoveResizeEvent() in [AWTWindow _deliverMoveResizeEvent]");
+        NSProcessInfo *processInfo = [NSProcessInfo processInfo];
+        [NSApplicationAWT logException:e forProcess:processInfo];
+    }
     [AWTWindow synthesizeMouseEnteredExitedEventsForAllWindows];
 }
 
@@ -1091,6 +1117,8 @@ AWT_ASSERT_APPKIT_THREAD;
 #ifdef DEBUG
         NSLog(@"=== Native.windowDidResize: %@ | ignored in transition to fullscreen ===", self.nsWindow.title);
 #endif
+        // set window flag:
+        self.isResizeWindowDuringAnotherWindowEndScheduled = YES;
         return;
     }
     [self _deliverMoveResizeEvent];
@@ -1378,6 +1406,18 @@ AWT_ASSERT_APPKIT_THREAD;
     if (orderingScheduled) {
         orderingScheduled = NO;
         [self checkBlockingAndOrder];
+    }
+    // As windowDidResize() is dropped while this window enters
+    // full screen and ignoreResizeWindowDuringAnotherWindowEnd is set. Deliver
+    // the final frame now so CPlatformWindow.nativeBounds and the peer surface
+    // match the full-screen size. LWWindowPeer.notifyReshape() returns early
+    // when nothing changed, so this is free in the common case.
+    if (self.isResizeWindowDuringAnotherWindowEndScheduled) {
+        self.isResizeWindowDuringAnotherWindowEndScheduled = NO;
+#ifdef DEBUG
+        NSLog(@"fullScreenTransitionFinished: _deliverMoveResizeEvent !");
+#endif
+        [self _deliverMoveResizeEvent];
     }
 }
 
@@ -1782,7 +1822,7 @@ static const CGFloat DefaultHorizontalTitleBarButtonOffset = 20.0;
 
 - (void) setWindowControlsHidden: (BOOL) hidden {
     if (_fullScreenOriginalButtons != nil) {
-        [_fullScreenOriginalButtons.window.contentView setHidden:NO];
+        [_fullScreenOriginalButtons.window setContentHidden:NO];
         _fullScreenButtons.hidden = YES;
     }
 
@@ -1807,15 +1847,16 @@ static const CGFloat DefaultHorizontalTitleBarButtonOffset = 20.0;
 
     for (NSWindow* window in [[NSApplication sharedApplication] windows]) {
           if ([window isKindOfClass:NSClassFromString(@"NSToolbarFullScreenWindow")]) {
-            [window.contentView setHidden:YES];
+            [window setContentHidden:YES];
           }
     }
 
     _fullScreenButtons = [[AWTButtonsView alloc] init];
     [self updateFullScreenButtons];
-    [_fullScreenButtons addTrackingArea:[[NSTrackingArea alloc] initWithRect:[_fullScreenButtons visibleRect]
-                                                      options:(NSTrackingActiveAlways | NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved)
-                                                      owner:_fullScreenButtons userInfo:nil]];
+    // The view is not in a window yet, so its visibleRect is unbounded: use NSTrackingInVisibleRect instead
+    [_fullScreenButtons addTrackingArea:[[[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:(NSTrackingActiveAlways | NSTrackingMouseEnteredAndExited | NSTrackingInVisibleRect)
+        owner:_fullScreenButtons userInfo:nil] autorelease]];
 
     NSUInteger masks = [self.nsWindow styleMask];
 
@@ -1861,7 +1902,7 @@ static const CGFloat DefaultHorizontalTitleBarButtonOffset = 20.0;
         if (_fullScreenButtons == nil || _fullScreenOriginalButtons == nil) {
             return;
         }
-        [_fullScreenOriginalButtons.window.contentView setHidden:NO];
+        [_fullScreenOriginalButtons.window setContentHidden:NO];
         [self resetWindowFullScreenControls];
     } else {
         if (!self.isCustomTitleBarEnabled || _fullScreenButtons != nil) {
@@ -2448,6 +2489,7 @@ JNI_COCOA_ENTER(env);
         NSRect rect = ConvertNSScreenRect(NULL, jrect);
         [window constrainSize:&rect.size];
 
+        NSRect oldFrame = [nsWindow frame];
         [nsWindow setFrame:rect display:YES];
 
         // only start tracking events if pointer is above the toplevel
@@ -2464,7 +2506,12 @@ JNI_COCOA_ENTER(env);
         // "java.awt.Window" and NSWindow locations, because "java.awt.Window"
         // already uses location ignored by the macOS.
         // see sun.lwawt.LWWindowPeer#notifyReshape()
-        if (!NSEqualRects(rect, [nsWindow frame])) {
+
+        // AppKit also posts no windowDidMove()/windowDidResize() when
+        // the frame did not change. A window created with its final frame then
+        // keeps empty CPlatformWindow.nativeBounds. Resync in that case too.
+        NSRect newFrame = [nsWindow frame];
+        if (NSEqualRects(oldFrame, newFrame) || !NSEqualRects(rect, newFrame)) {
             [window _deliverMoveResizeEvent];
         }
     }];
@@ -2882,6 +2929,10 @@ JNI_COCOA_ENTER(env);
         [window release];
 
         ignoreResizeWindowDuringAnotherWindowEnd = NO;
+#ifdef DEBUG
+        NSLog(@"=== CPlatformWindow.nativeDispose: ignoreResizeWindowDuringAnotherWindowEnd = %d",
+              ignoreResizeWindowDuringAnotherWindowEnd);
+#endif
     }];
 
 JNI_COCOA_EXIT(env);

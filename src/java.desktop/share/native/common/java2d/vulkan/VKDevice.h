@@ -50,18 +50,21 @@ struct VKDevice {
     VkPhysicalDeviceType type;
     VkDeviceSize         nonCoherentAtomSize;
     uint32_t             queueFamily;
-    ARRAY(pchar)         enabledLayers;
-    ARRAY(pchar)         enabledExtensions;
+    pchar_array_t         enabledLayers;
+    pchar_array_t         enabledExtensions;
     VkQueue              queue;
     VKSampledSrcTypes    sampledSrcTypes;
-    ARRAY(jint)          supportedFormats;
+    jint_array_t          supportedFormats;
     jint caps;
+    VkBool32 swapchainMaintenance1Supported;
+    VkBool32 bresenhamLinesSupported;
 
     VKAllocator*     allocator;
     VKRenderer*      renderer;
 
     DEVICE_FUNCTION_TABLE(DECL_PFN)
     SWAPCHAIN_DEVICE_FUNCTION_TABLE(DECL_PFN)
+    SWAPCHAIN_MAINTENANCE_1_DEVICE_FUNCTION_TABLE(DECL_PFN)
 };
 
 #endif //VKDevice_h_Included

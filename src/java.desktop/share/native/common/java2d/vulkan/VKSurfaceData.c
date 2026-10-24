@@ -30,6 +30,8 @@
 #include "VKImage.h"
 #include "VKEnv.h"
 
+#include <assert.h>
+
 /**
  * Release VKSDOps resources & reset to initial state.
  */
@@ -49,24 +51,91 @@ static void VKSD_ResetImageSurface(VKSDOps* vksdo) {
     }
 }
 
+static void VKSwapchain_DestroyImpl(VKSwapchain* swapchain)
+{
+    if (swapchain == NULL) {
+        return;
+    }
+
+    if (swapchain->device != NULL && swapchain->handle != VK_NULL_HANDLE) {
+        swapchain->device->vkDestroySwapchainKHR(swapchain->device->handle, swapchain->handle, NULL);
+    }
+
+    ARRAY_FREE(swapchain->images);
+    free(swapchain);
+}
+
+VKSwapchain* VKSwapchain_Create(VKDevice* device, const VkSwapchainCreateInfoKHR* createInfo) {
+    VKSwapchain *swapchain = calloc(1, sizeof *swapchain);
+
+    if (swapchain == NULL) {
+        return NULL;
+    }
+
+    swapchain->refcount = 1;
+    swapchain->device = device;
+    swapchain->extent = createInfo->imageExtent;
+    swapchain->isSuboptimal = VK_FALSE;
+
+    VK_IF_ERROR(device->vkCreateSwapchainKHR(device->handle, createInfo, NULL, &swapchain->handle)) {
+        VKSwapchain_DestroyImpl(swapchain);
+        return NULL;
+    }
+
+    uint32_t imageCount = 0;
+    VK_IF_ERROR(device->vkGetSwapchainImagesKHR(device->handle, swapchain->handle, &imageCount, NULL)) {
+        VKSwapchain_DestroyImpl(swapchain);
+        return NULL;
+    }
+
+    ARRAY_RESIZE(swapchain->images, imageCount);
+    VK_IF_ERROR(device->vkGetSwapchainImagesKHR(device->handle, swapchain->handle, &imageCount, swapchain->images.data)) {
+        VKSwapchain_DestroyImpl(swapchain);
+        return NULL;
+    }
+
+    J2dRlsTraceLn(J2D_TRACE_INFO, "VKSwapchain_Create(%p): swapchain created", swapchain);
+    return swapchain;
+}
+
+VKSwapchain* VKSwapchain_Retain(VKSwapchain* swapchain) {
+    if (swapchain == NULL) return NULL;
+    ++swapchain->refcount;
+    return swapchain;
+}
+
+void VKSwapchain_Release(VKSwapchain* swapchain) {
+    if (swapchain == NULL) return;
+    if (--swapchain->refcount > 0) return;
+
+    J2dRlsTraceLn(J2D_TRACE_INFO, "VKSwapchain_Release(%p): destroying Vulkan objects", swapchain);
+    VKSwapchain_DestroyImpl(swapchain);
+}
+
+static void VKSwapchain_DestroySync(VKSwapchain* swapchain) {
+    if (swapchain == NULL) return;
+    VKDevice* device = swapchain->device;
+    VKRenderer* renderer = device->renderer;
+    if (renderer != NULL) {
+        VKRenderer_CleanupPresentations(renderer, VK_TRUE, swapchain);
+    }
+    assert(swapchain->refcount == 1);
+    VKSwapchain_Release(swapchain);
+}
+
 void VKSD_ResetSurface(VKSDOps* vksdo) {
     VKSD_ResetImageSurface(vksdo);
 
     // Release VKWinSDOps resources, if applicable.
     if (vksdo->drawableType == VKSD_WINDOW) {
         VKWinSDOps* vkwinsdo = (VKWinSDOps*) vksdo;
-        ARRAY_FREE(vkwinsdo->swapchainImages);
-        vkwinsdo->swapchainImages = NULL;
-        if (vkwinsdo->vksdOps.device != NULL && vkwinsdo->swapchain != VK_NULL_HANDLE) {
-            vkwinsdo->vksdOps.device->vkDestroySwapchainKHR(vkwinsdo->vksdOps.device->handle, vkwinsdo->swapchain, NULL);
-        }
+        VKSwapchain_DestroySync(vkwinsdo->swapchain);
+        vkwinsdo->swapchain = NULL;
         if (vkwinsdo->surface != VK_NULL_HANDLE) {
             VKEnv* vk = VKEnv_GetInstance();
             vk->vkDestroySurfaceKHR(vk->instance, vkwinsdo->surface, NULL);
         }
-        vkwinsdo->swapchain = VK_NULL_HANDLE;
         vkwinsdo->surface = VK_NULL_HANDLE;
-        vkwinsdo->swapchainDevice = NULL;
     }
 }
 
@@ -130,9 +199,10 @@ VkBool32 VKSD_ConfigureWindowSurface(VKWinSDOps* vkwinsdo) {
         return VK_FALSE;
     }
     // Check for changes.
-    if (vkwinsdo->swapchain != VK_NULL_HANDLE && vkwinsdo->swapchainDevice == vkwinsdo->vksdOps.device &&
-            vkwinsdo->swapchainExtent.width == vkwinsdo->vksdOps.image->extent.width &&
-            vkwinsdo->swapchainExtent.height == vkwinsdo->vksdOps.image->extent.height) return VK_TRUE;
+    if (vkwinsdo->swapchain != NULL && !vkwinsdo->swapchain->isSuboptimal &&
+            vkwinsdo->swapchain->device == vkwinsdo->vksdOps.device &&
+            vkwinsdo->swapchain->extent.width == vkwinsdo->vksdOps.image->extent.width &&
+            vkwinsdo->swapchain->extent.height == vkwinsdo->vksdOps.image->extent.height) return VK_TRUE;
     // Check that surface is ready.
     if (vkwinsdo->surface == VK_NULL_HANDLE) {
         J2dRlsTraceLn(J2D_TRACE_WARNING, "VKSD_ConfigureWindowSurface(%p): surface is not ready", vkwinsdo);
@@ -148,30 +218,36 @@ VkBool32 VKSD_ConfigureWindowSurface(VKWinSDOps* vkwinsdo) {
         return VK_FALSE;
     }
 
+    VkExtent2D swapchainImageExtent;
+
     // currentExtent is the current width and height of the surface, or the special value (0xFFFFFFFF, 0xFFFFFFFF)
     // indicating that the surface size will be determined by the extent of a swapchain targeting the surface.
     // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSurfaceCapabilitiesKHR.html
-    // The behavior is platform-dependent if the image extent does not match the surface’s currentExtent
-    // as returned by vkGetPhysicalDeviceSurfaceCapabilitiesKHR.
-    // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSwapchainCreateInfoKHR.html
-    if ((vkwinsdo->vksdOps.image->extent.width != capabilities.currentExtent.width ||
-         vkwinsdo->vksdOps.image->extent.height != capabilities.currentExtent.height) &&
-         (capabilities.currentExtent.width != 0xFFFFFFFF || capabilities.currentExtent.height != 0xFFFFFFFF)) {
-        J2dRlsTraceLn(J2D_TRACE_WARNING,
-                      "VKSD_ConfigureWindowSurface(%p): surface size doesn't match, expected=%dx%d, capabilities.currentExtent=%dx%d",
-                      vkwinsdo, vkwinsdo->vksdOps.image->extent.width, vkwinsdo->vksdOps.image->extent.height,
-                      capabilities.currentExtent.width, capabilities.currentExtent.height);
-        return VK_FALSE;
+    if (capabilities.currentExtent.width == 0xFFFFFFFF && capabilities.currentExtent.height == 0xFFFFFFFF) {
+        swapchainImageExtent = vkwinsdo->vksdOps.image->extent;
+    } else {
+        assert(capabilities.currentExtent.width != 0xFFFFFFFF && capabilities.currentExtent.height != 0xFFFFFFFF);
+        // The behavior is platform-dependent if the image extent does not match the surface’s currentExtent
+        // as returned by vkGetPhysicalDeviceSurfaceCapabilitiesKHR.
+        // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkSwapchainCreateInfoKHR.html
+        swapchainImageExtent = capabilities.currentExtent;
+        if (vkwinsdo->vksdOps.image->extent.width != capabilities.currentExtent.width ||
+            vkwinsdo->vksdOps.image->extent.height != capabilities.currentExtent.height) {
+            J2dRlsTraceLn(J2D_TRACE_VERBOSE,
+                          "VKSD_ConfigureWindowSurface(%p): surface size doesn't match backing image size (this is ok during resize), proceeding anyway - image=%dx%d, capabilities.currentExtent=%dx%d",
+                          vkwinsdo, vkwinsdo->vksdOps.image->extent.width, vkwinsdo->vksdOps.image->extent.height,
+                          capabilities.currentExtent.width, capabilities.currentExtent.height);
+        }
     }
 
-    if (vkwinsdo->vksdOps.image->extent.width  < capabilities.minImageExtent.width  ||
-        vkwinsdo->vksdOps.image->extent.height < capabilities.minImageExtent.height ||
-        vkwinsdo->vksdOps.image->extent.width  > capabilities.maxImageExtent.width  ||
-        vkwinsdo->vksdOps.image->extent.height > capabilities.maxImageExtent.height) {
+    if (swapchainImageExtent.width  < capabilities.minImageExtent.width  ||
+        swapchainImageExtent.height < capabilities.minImageExtent.height ||
+        swapchainImageExtent.width  > capabilities.maxImageExtent.width  ||
+        swapchainImageExtent.height > capabilities.maxImageExtent.height) {
         J2dRlsTraceLn(J2D_TRACE_WARNING,
                       "VKSD_ConfigureWindowSurface(%p): surface size doesn't fit, expected=%dx%d, "
                       "capabilities.minImageExtent=%dx%d, capabilities.minImageExtent=%dx%d",
-                      vkwinsdo, vkwinsdo->vksdOps.image->extent.width, vkwinsdo->vksdOps.image->extent.height,
+                      vkwinsdo, swapchainImageExtent.width, swapchainImageExtent.height,
                       capabilities.minImageExtent.width, capabilities.minImageExtent.height,
                       capabilities.maxImageExtent.width, capabilities.maxImageExtent.height);
         return VK_FALSE;
@@ -193,7 +269,7 @@ VkBool32 VKSD_ConfigureWindowSurface(VKWinSDOps* vkwinsdo) {
     VK_IF_ERROR(vk->vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, vkwinsdo->surface, &formatCount, NULL)) {
         return VK_FALSE;
     }
-    VkSurfaceFormatKHR formats[formatCount];
+    DECL_ARRAY(VkSurfaceFormatKHR, formats, formatCount);
     VK_IF_ERROR(vk->vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, vkwinsdo->surface, &formatCount, formats)) {
         return VK_FALSE;
     }
@@ -219,7 +295,7 @@ VkBool32 VKSD_ConfigureWindowSurface(VKWinSDOps* vkwinsdo) {
     VK_IF_ERROR(vk->vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, vkwinsdo->surface, &presentModeCount, NULL)) {
         return VK_FALSE;
     }
-    VkPresentModeKHR presentModes[presentModeCount];
+    DECL_ARRAY(VkPresentModeKHR, presentModes, presentModeCount);
     VK_IF_ERROR(vk->vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, vkwinsdo->surface, &presentModeCount, presentModes)) {
         return VK_FALSE;
     }
@@ -227,29 +303,25 @@ VkBool32 VKSD_ConfigureWindowSurface(VKWinSDOps* vkwinsdo) {
     // https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkPresentModeKHR.html
     uint32_t imageCount = 2;
     VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
-    // MAILBOX makes no sense without at least 3 images and using less memory
-    // for swapchain images may be more beneficial than having unlimited FPS.
-    // However, if minImageCount is too big anyway, why not use MAILBOX.
-    if (capabilities.minImageCount >= 3) {
-        for (uint32_t i = 0; i < presentModeCount; i++) {
-            if (presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-                presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-                imageCount = 3;
-                break;
-            }
+    // Try to use mailbox whenever possible, FIFO currently has serious issues on Mutter.
+    for (uint32_t i = 0; i < presentModeCount; i++) {
+        if (presentModes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+            presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+            // MAILBOX needs at least 3 images to be functionally different from FIFO.
+            imageCount = 3;
+            break;
         }
     }
     if (imageCount > capabilities.maxImageCount && capabilities.maxImageCount != 0) imageCount = capabilities.maxImageCount;
     else if (imageCount < capabilities.minImageCount) imageCount = capabilities.minImageCount;
 
-    VkSwapchainKHR swapchain;
     VkSwapchainCreateInfoKHR createInfoKhr = {
             .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
             .surface = vkwinsdo->surface,
             .minImageCount = imageCount,
             .imageFormat = format->format,
             .imageColorSpace = format->colorSpace,
-            .imageExtent = vkwinsdo->vksdOps.image->extent,
+            .imageExtent = swapchainImageExtent,
             .imageArrayLayers = 1,
             .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -259,35 +331,37 @@ VkBool32 VKSD_ConfigureWindowSurface(VKWinSDOps* vkwinsdo) {
             .compositeAlpha = compositeAlpha,
             .presentMode = presentMode,
             .clipped = VK_TRUE,
-            .oldSwapchain = vkwinsdo->swapchainDevice == device ? vkwinsdo->swapchain : NULL
+            .oldSwapchain = (vkwinsdo->swapchain != NULL && vkwinsdo->swapchain->device == device) ?
+                    vkwinsdo->swapchain->handle : VK_NULL_HANDLE,
     };
 
-    VK_IF_ERROR(device->vkCreateSwapchainKHR(device->handle, &createInfoKhr, NULL, &swapchain)) {
+    VkSwapchainPresentModesCreateInfoEXT presentModesCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT
+    };
+
+    if (device->swapchainMaintenance1Supported) {
+        presentModesCreateInfo.presentModeCount = 1;
+        presentModesCreateInfo.pPresentModes = &presentMode;
+        createInfoKhr.pNext = &presentModesCreateInfo;
+    }
+
+    VKSwapchain *swapchain = VKSwapchain_Create(device, &createInfoKhr);
+
+    if (swapchain == NULL) {
         return VK_FALSE;
     }
     J2dRlsTraceLn(J2D_TRACE_INFO, "VKSD_ConfigureWindowSurface(%p): swapchain created, format=%d, presentMode=%d, imageCount=%d, compositeAlpha=%d",
                   vkwinsdo, format->format, presentMode, imageCount, compositeAlpha);
-    vkwinsdo->resizeCallback(vkwinsdo, vkwinsdo->vksdOps.image->extent);
+    vkwinsdo->resizeCallback(vkwinsdo);
 
-    if (vkwinsdo->swapchain != VK_NULL_HANDLE) {
+    if (vkwinsdo->swapchain != NULL) {
         // Destroy old swapchain.
-        // TODO is it possible that old swapchain is still being presented, can we destroy it right now?
-        device->vkDestroySwapchainKHR(vkwinsdo->swapchainDevice->handle, vkwinsdo->swapchain, NULL);
-        J2dRlsTraceLn(J2D_TRACE_INFO, "VKSD_ConfigureWindowSurface(%p): old swapchain destroyed", vkwinsdo);
+        VKSwapchain_Release(vkwinsdo->swapchain);
+        vkwinsdo->swapchain = NULL;
+        J2dRlsTraceLn(J2D_TRACE_INFO, "VKSD_ConfigureWindowSurface(%p): old swapchain released", vkwinsdo);
     }
     vkwinsdo->swapchain = swapchain;
-    vkwinsdo->swapchainDevice = device;
-    vkwinsdo->swapchainExtent = vkwinsdo->vksdOps.image->extent;
 
-    uint32_t swapchainImageCount;
-    VK_IF_ERROR(device->vkGetSwapchainImagesKHR(device->handle, vkwinsdo->swapchain, &swapchainImageCount, NULL)) {
-        return VK_FALSE;
-    }
-    ARRAY_RESIZE(vkwinsdo->swapchainImages, swapchainImageCount);
-    VK_IF_ERROR(device->vkGetSwapchainImagesKHR(device->handle, vkwinsdo->swapchain,
-                                             &swapchainImageCount, vkwinsdo->swapchainImages)) {
-        return VK_FALSE;
-    }
     return VK_TRUE;
 }
 
